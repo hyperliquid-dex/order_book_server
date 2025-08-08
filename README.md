@@ -1,5 +1,9 @@
 # Local WebSocket Server
 
+## Disclaimer
+
+This was a standalone project, not written by the Hyperliquid Labs core team. It is made available "as is", without warranty of any kind, express or implied, including but not limited to warranties of merchantability, fitness for a particular purpose, or noninfringement. Use at your own risk. It is intended for educational or illustrative purposes only and may be incomplete, insecure, or incompatible with future systems. No commitment is made to maintain, update, or fix any issues in this repository.
+
 ## Functionality
 
 This server provides the `l2book` and `trades` endpoints from [Hyperliquid’s official API](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/subscriptions), with roughly the same API.
@@ -11,12 +15,12 @@ This server provides the `l2book` and `trades` endpoints from [Hyperliquid’s o
 The `l4book` subscription first sends a snapshot of the entire book and then forwards order diffs by block. The subscription format is:
 
 ```json
-{ 
-  "method": "subscribe", 
-  "subscription": { 
-    "type": "l4Book", 
-    "coin": "<coin_symbol>" 
-  } 
+{
+  "method": "subscribe",
+  "subscription": {
+    "type": "l4Book",
+    "coin": "<coin_symbol>"
+  }
 }
 ```
 
