@@ -26,7 +26,7 @@ The `l4book` subscription first sends a snapshot of the entire book and then for
 
 ## Setup
 
-1. Run a non-validating node (from [`hyperliquid-dex/node`](https://github.com/hyperliquid-dex/node)).
+1. Run a non-validating node (from [`hyperliquid-dex/node`](https://github.com/hyperliquid-dex/node)). Requires batching by block. Requires recording fills, order statuses, and raw book diffs.
 
 2. Then run this local server:
 
@@ -43,3 +43,4 @@ If you want logging, prepend the command with `RUST_LOG=info`.
 
 * This server does **not** show untriggered trigger orders.
 * It currently **does not** support spot order books.
+* The current implementation batches node outputs by block, making the order book a few milliseconds slower than a streaming implementation.
