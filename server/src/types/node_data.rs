@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use alloy::primitives::Address;
+use alloy::{contract::Event, primitives::Address};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
@@ -49,20 +49,64 @@ impl NodeDataOrderStatus {
     }
 }
 
-#[derive(Clone, Copy, strum_macros::Display)]
+#[derive(Clone, Copy, strum_macros::Display, PartialEq, Eq)]
 pub(crate) enum EventSource {
     Fills,
     OrderStatuses,
     OrderDiffs,
+    // Batched versions for block-by-block processing
+    FillsBatched,
+    OrderStatusesBatched,
+    OrderDiffsBatched,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessingMode {
+    /// Process events individually as they arrive (default)
+    Single,
+    /// Process events in batches by block
+    Batched,
+}
+
+impl Default for ProcessingMode {
+    fn default() -> Self {
+        Self::Single
+    }
+}
+
+pub struct EventSources {
+    pub fills: EventSource,
+    pub order_statuses: EventSource,
+    pub order_diffs: EventSource,
+}
+
+impl ProcessingMode {
+    /// Get the appropriate EventSource variants for this processing mode
+    pub(crate) fn event_sources(self) -> EventSources {
+        match self {
+            Self::Single => EventSources {
+                fills: EventSource::Fills,
+                order_statuses: EventSource::OrderStatuses,
+                order_diffs: EventSource::OrderDiffs,
+            },
+            Self::Batched => EventSources {
+                fills: EventSource::FillsBatched,
+                order_statuses: EventSource::OrderStatusesBatched,
+                order_diffs: EventSource::OrderDiffsBatched,
+            },
+        }
+    }
 }
 
 impl EventSource {
     #[must_use]
     pub(crate) fn event_source_dir(self, dir: &Path) -> PathBuf {
         match self {
-            Self::Fills => dir.join("hl/data/node_fills_by_block"),
-            Self::OrderStatuses => dir.join("hl/data/node_order_statuses_by_block"),
-            Self::OrderDiffs => dir.join("hl/data/node_raw_book_diffs_by_block"),
+            Self::Fills => dir.join("hl/data/node_fills"),
+            Self::OrderStatuses => dir.join("hl/data/node_order_statuses"),
+            Self::OrderDiffs => dir.join("hl/data/node_raw_book_diffs"),
+            Self::FillsBatched => dir.join("hl/data/node_fills_by_block"),
+            Self::OrderStatusesBatched => dir.join("hl/data/node_order_statuses_by_block"),
+            Self::OrderDiffsBatched => dir.join("hl/data/node_raw_book_diffs_by_block"),
         }
     }
 }
@@ -83,6 +127,23 @@ impl<E> Batch<E> {
 
     pub(crate) const fn block_number(&self) -> u64 {
         self.block_number
+    }
+
+    pub(crate) const fn new(
+        local_time: NaiveDateTime,
+        block_time: NaiveDateTime,
+        block_number: u64,
+        events: Vec<E>,
+    ) -> Self {
+        Self { local_time, block_time, block_number, events }
+    }
+
+    pub(crate) const fn local_time(&self) -> NaiveDateTime {
+        self.local_time
+    }
+
+    pub(crate) const fn block_time_raw(&self) -> NaiveDateTime {
+        self.block_time
     }
 
     pub(crate) fn events(self) -> Vec<E> {

@@ -123,6 +123,12 @@ pub(super) enum EventBatch {
     BookDiffs(Batch<NodeDataOrderDiff>),
     Fills(Batch<NodeDataFill>),
 }
+// Individual events for immediate processing
+pub(super) enum SingleEvent {
+    OrderStatus(NodeDataOrderStatus),
+    BookDiff(NodeDataOrderDiff),
+    Fill(NodeDataFill),
+}
 
 pub(super) struct BatchQueue<T> {
     deque: VecDeque<Batch<T>>,

@@ -2,7 +2,24 @@
 use std::{env::home_dir, net::Ipv4Addr};
 
 use clap::Parser;
-use server::{Result, run_websocket_server};
+use server::{Result, run_websocket_server, ProcessingMode};
+
+#[derive(Debug, Clone, clap::ValueEnum)]
+enum CliProcessingMode {
+    /// Process events individually as they arrive (default)
+    Single,
+    /// Process events in batches by block  
+    Batched,
+}
+
+impl From<CliProcessingMode> for ProcessingMode {
+    fn from(cli_mode: CliProcessingMode) -> Self {
+        match cli_mode {
+            CliProcessingMode::Single => ProcessingMode::Single,
+            CliProcessingMode::Batched => ProcessingMode::Batched,
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -18,6 +35,10 @@ struct Args {
     /// Directory path for node data files (defaults to home directory)
     #[arg(long)]
     directory: Option<std::path::PathBuf>,
+
+    /// Processing mode: single (default) or batched
+    #[arg(long, value_enum, default_value = "single")]
+    mode: CliProcessingMode,
 }
 
 #[tokio::main]
@@ -33,7 +54,9 @@ async fn main() -> Result<()> {
         home_dir().expect("Could not find home directory")
     });
 
-    run_websocket_server(&full_address, directory, true).await?;
+    let processing_mode = ProcessingMode::from(args.mode);
+
+    run_websocket_server(&full_address, directory, processing_mode, true).await?;
 
     Ok(())
 }
