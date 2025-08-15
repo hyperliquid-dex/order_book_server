@@ -21,7 +21,7 @@ use futures_util::StreamExt;
 use log::{error, info};
 use std::{
     collections::{HashMap, HashSet},
-    env::home_dir,
+    path::PathBuf,
     sync::Arc,
 };
 use tokio::select;
@@ -33,20 +33,19 @@ use tokio::{
     },
 };
 
-pub async fn run_websocket_server(address: &str, ignore_spot: bool) -> Result<()> {
+pub async fn run_websocket_server(address: &str, directory: PathBuf, processing_mode: crate::types::node_data::ProcessingMode, ignore_spot: bool) -> Result<()> {
     let (internal_message_tx, _) = channel::<Arc<InternalMessage>>(100);
 
     // Central task: listen to messages and forward them for distribution
-    let home_dir = home_dir().ok_or("Could not find home directory")?;
     let listener = {
         let internal_message_tx = internal_message_tx.clone();
-        OrderBookListener::new(Some(internal_message_tx), ignore_spot)
+        OrderBookListener::new(Some(internal_message_tx), processing_mode, ignore_spot)
     };
     let listener = Arc::new(Mutex::new(listener));
     {
         let listener = listener.clone();
         tokio::spawn(async move {
-            if let Err(err) = hl_listen(listener, home_dir).await {
+            if let Err(err) = hl_listen(listener, directory, processing_mode).await {
                 error!("Listener fatal error: {err}");
                 std::process::exit(1);
             }
