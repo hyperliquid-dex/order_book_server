@@ -68,6 +68,14 @@ pub(crate) async fn hl_listen(listener: Arc<Mutex<OrderBookListener>>, dir: Path
     watcher.watch(&order_statuses_dir, RecursiveMode::Recursive)?;
     watcher.watch(&fills_dir, RecursiveMode::Recursive)?;
     watcher.watch(&order_diffs_dir, RecursiveMode::Recursive)?;
+    
+    // Check if we should skip initial snapshot
+    let skip_initial_snapshot = std::env::var("SKIP_INITIAL_SNAPSHOT").is_ok();
+    if skip_initial_snapshot {
+        info!("SKIP_INITIAL_SNAPSHOT is set, starting without initial snapshot");
+        listener.lock().await.mark_ready_without_snapshot();
+    }
+    
     let start = Instant::now() + Duration::from_secs(5);
     let mut ticker = interval_at(start, Duration::from_secs(10));
     loop {
@@ -118,9 +126,11 @@ pub(crate) async fn hl_listen(listener: Arc<Mutex<OrderBookListener>>, dir: Path
                 }
             }
             _ = ticker.tick() => {
-                let listener = listener.clone();
-                let snapshot_fetch_task_tx = snapshot_fetch_task_tx.clone();
-                fetch_snapshot(dir.clone(), listener, snapshot_fetch_task_tx, ignore_spot);
+                if !skip_initial_snapshot || listener.lock().await.is_ready() {
+                    let listener = listener.clone();
+                    let snapshot_fetch_task_tx = snapshot_fetch_task_tx.clone();
+                    fetch_snapshot(dir.clone(), listener, snapshot_fetch_task_tx, ignore_spot);
+                }
             }
             () = sleep(Duration::from_secs(5)) => {
                 let listener = listener.lock().await;
@@ -224,6 +234,15 @@ impl OrderBookListener {
 
     pub(crate) const fn is_ready(&self) -> bool {
         self.order_book_state.is_some()
+    }
+    
+    pub(crate) fn mark_ready_without_snapshot(&mut self) {
+        use crate::order_book::multi_book::Snapshots;
+        use std::collections::HashMap;
+        info!("Marking order book as ready without initial snapshot");
+        // Initialize with empty snapshot at height 0
+        let empty_snapshot = Snapshots::new(HashMap::new());
+        self.order_book_state = Some(OrderBookState::from_snapshot(empty_snapshot, 0, 0, true, self.ignore_spot));
     }
 
     pub(crate) fn universe(&self) -> HashSet<Coin> {
