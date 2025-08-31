@@ -70,10 +70,10 @@ pub(super) async fn process_rmp_file(dir: &Path) -> Result<PathBuf> {
         info!("No cached snapshots found, falling back to HTTP request");
     }
     
-    // Remove existing file if present to ensure we detect when new one is written
-    if output_path.exists() {
-        fs::remove_file(&output_path).await?;
-    }
+    // // Remove existing file if present to ensure we detect when new one is written
+    // if output_path.exists() {
+    //     fs::remove_file(&output_path).await?;
+    // }
     
     let payload = json!({
         "type": "fileSnapshot",
