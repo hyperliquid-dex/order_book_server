@@ -8,9 +8,9 @@ This was a standalone project, not written by the Hyperliquid Labs core team. It
 
 This server provides the `l2book` and `trades` endpoints from [Hyperliquid’s official API](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/subscriptions), with roughly the same API.
 
-* The `l2book` subscription now includes an optional field:
+- The `l2book` subscription now includes an optional field:
   `n_levels`, which can be up to `100` and defaults to `20`.
-* This server also introduces a new endpoint: `l4book`.
+- This server also introduces a new endpoint: `l4book`.
 
 The `l4book` subscription first sends a snapshot of the entire book and then forwards order diffs by block. The subscription format is:
 
@@ -39,8 +39,10 @@ In addition, the local server periodically fetches order book snapshots from the
 
 If you want logging, prepend the command with `RUST_LOG=info`.
 
+The WebSocket server comes with compression built-in. The compression ratio can be tuned using the `--websocket-compression-level` flag.
+
 ## Caveats
 
-* This server does **not** show untriggered trigger orders.
-* It currently **does not** support spot order books.
-* The current implementation batches node outputs by block, making the order book a few milliseconds slower than a streaming implementation.
+- This server does **not** show untriggered trigger orders.
+- It currently **does not** support spot order books.
+- The current implementation batches node outputs by block, making the order book a few milliseconds slower than a streaming implementation.
