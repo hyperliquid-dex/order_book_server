@@ -39,7 +39,11 @@ mod utils;
 
 // WARNING - this code assumes no other file system operations are occurring in the watched directories
 // if there are scripts running, this may not work as intended
-pub(crate) async fn hl_listen(listener: Arc<Mutex<OrderBookListener>>, dir: PathBuf) -> Result<()> {
+pub(crate) async fn hl_listen(
+    listener: Arc<Mutex<OrderBookListener>>,
+    dir: PathBuf,
+    secrets: Option<crate::config::Secrets>,
+) -> Result<()> {
     let order_statuses_dir = EventSource::OrderStatuses.event_source_dir(&dir).canonicalize()?;
     let fills_dir = EventSource::Fills.event_source_dir(&dir).canonicalize()?;
     let order_diffs_dir = EventSource::OrderDiffs.event_source_dir(&dir).canonicalize()?;
@@ -68,76 +72,143 @@ pub(crate) async fn hl_listen(listener: Arc<Mutex<OrderBookListener>>, dir: Path
     watcher.watch(&order_statuses_dir, RecursiveMode::Recursive)?;
     watcher.watch(&fills_dir, RecursiveMode::Recursive)?;
     watcher.watch(&order_diffs_dir, RecursiveMode::Recursive)?;
-    
+
     // Check if we should skip initial snapshot
     let skip_initial_snapshot = std::env::var("SKIP_INITIAL_SNAPSHOT").is_ok();
     if skip_initial_snapshot {
         info!("SKIP_INITIAL_SNAPSHOT is set, starting without initial snapshot");
         listener.lock().await.mark_ready_without_snapshot();
     }
-    
+
     let start = Instant::now() + Duration::from_secs(5);
     let mut ticker = interval_at(start, Duration::from_secs(10));
+
+    // -------- Option A watchdog: outer timeout envelope --------
+    const WATCHDOG: Duration = Duration::from_secs(5);
+
     loop {
-        tokio::select! {
-            event = fs_event_rx.recv() =>  match event {
-                Some(Ok(event)) => {
-                    if event.kind.is_create() || event.kind.is_modify() {
-                        let new_path = &event.paths[0];
-                        if new_path.starts_with(&order_statuses_dir) && new_path.is_file() {
-                            listener
-                                .lock()
-                                .await
-                                .process_update(&event, new_path, EventSource::OrderStatuses)
-                                .map_err(|err| format!("Order status processing error: {err}"))?;
-                        } else if new_path.starts_with(&fills_dir) && new_path.is_file() {
-                            listener
-                                .lock()
-                                .await
-                                .process_update(&event, new_path, EventSource::Fills)
-                                .map_err(|err| format!("Fill update processing error: {err}"))?;
-                        } else if new_path.starts_with(&order_diffs_dir) && new_path.is_file() {
-                            listener
-                                .lock()
-                                .await
-                                .process_update(&event, new_path, EventSource::OrderDiffs)
-                                .map_err(|err| format!("Book diff processing error: {err}"))?;
+        let outcome = tokio::time::timeout(WATCHDOG, async {
+            tokio::select! {
+                // ---- filesystem events ----
+                event = fs_event_rx.recv() =>  match event {
+                    Some(Ok(event)) => {
+                        if event.kind.is_create() || event.kind.is_modify() {
+                            let new_path = &event.paths[0];
+                            if new_path.starts_with(&order_statuses_dir) && new_path.is_file() {
+                                listener
+                                    .lock()
+                                    .await
+                                    .process_update(&event, new_path, EventSource::OrderStatuses)
+                                    .map_err(|err| format!("Order status processing error: {err}"))?;
+                            } else if new_path.starts_with(&fills_dir) && new_path.is_file() {
+                                listener
+                                    .lock()
+                                    .await
+                                    .process_update(&event, new_path, EventSource::Fills)
+                                    .map_err(|err| format!("Fill update processing error: {err}"))?;
+                            } else if new_path.starts_with(&order_diffs_dir) && new_path.is_file() {
+                                listener
+                                    .lock()
+                                    .await
+                                    .process_update(&event, new_path, EventSource::OrderDiffs)
+                                    .map_err(|err| format!("Book diff processing error: {err}"))?;
+                            }
                         }
-                    }
-                }
-                Some(Err(err)) => {
-                    error!("Watcher error: {err}");
-                    return Err(format!("Watcher error: {err}").into());
-                }
-                None => {
-                    error!("Channel closed. Listener exiting");
-                    return Err("Channel closed.".into());
-                }
-            },
-            snapshot_fetch_res = snapshot_fetch_task_rx.recv() => {
-                match snapshot_fetch_res {
-                    None => {
-                        return Err("Snapshot fetch task sender dropped".into());
+                        Ok::<(), Error>(())
                     }
                     Some(Err(err)) => {
-                        return Err(format!("Abci state reading error: {err}").into());
+                        error!("Watcher error: {err}");
+                        let error_message = format!("Watcher error: {err}");
+                        if let Some(ref sec) = secrets {
+                            crate::slack_alerts::send_alert_before_exit(
+                                Some(sec),
+                                crate::slack_alerts::AlertType::FileWatcherError,
+                                &error_message,
+                                ""
+                            ).await;
+                        }
+                        Err(error_message.into())
                     }
-                    Some(Ok(())) => {}
+                    None => {
+                        error!("Channel closed. Listener exiting");
+                        let error_message = "Channel closed.";
+                        if let Some(ref sec) = secrets {
+                            crate::slack_alerts::send_alert_before_exit(
+                                Some(sec),
+                                crate::slack_alerts::AlertType::ChannelError,
+                                error_message,
+                                ""
+                            ).await;
+                        }
+                        Err(error_message.into())
+                    }
+                },
+
+                // ---- snapshot fetch task results ----
+                snapshot_fetch_res = snapshot_fetch_task_rx.recv() => {
+                    match snapshot_fetch_res {
+                        None => {
+                            let error_message = "Snapshot fetch task sender dropped";
+                            if let Some(ref sec) = secrets {
+                                crate::slack_alerts::send_alert_before_exit(
+                                    Some(sec),
+                                    crate::slack_alerts::AlertType::ChannelError, // reuse existing type
+                                    error_message,
+                                    ""
+                                ).await;
+                            }
+                            Err(error_message.into())
+                        }
+                        Some(Err(err)) => {
+                            let error_message = format!("Abci state reading error: {err}");
+                            if let Some(ref sec) = secrets {
+                                crate::slack_alerts::send_alert_before_exit(
+                                    Some(sec),
+                                    crate::slack_alerts::AlertType::NodeExecutionBehind, // or a dedicated ABCI error type if you add one
+                                    &error_message,
+                                    ""
+                                ).await;
+                            }
+                            Err(error_message.into())
+                        }
+                        Some(Ok(())) => Ok(())
+                    }
+                }
+
+                // ---- periodic snapshot ticker ----
+                _ = ticker.tick() => {
+                    if !skip_initial_snapshot || listener.lock().await.is_ready() {
+                        let listener = listener.clone();
+                        let snapshot_fetch_task_tx = snapshot_fetch_task_tx.clone();
+                        fetch_snapshot(dir.clone(), listener, snapshot_fetch_task_tx, ignore_spot);
+                    }
+                    Ok::<(), Error>(())
                 }
             }
-            _ = ticker.tick() => {
-                if !skip_initial_snapshot || listener.lock().await.is_ready() {
-                    let listener = listener.clone();
-                    let snapshot_fetch_task_tx = snapshot_fetch_task_tx.clone();
-                    fetch_snapshot(dir.clone(), listener, snapshot_fetch_task_tx, ignore_spot);
+        }).await;
+
+        // If timeout elapsed (no inner branch fired within WATCHDOG), and we are ready → liveness failure.
+        if outcome.is_err() {
+            let listener_guard = listener.lock().await;
+            if listener_guard.is_ready() {
+                let error_message = format!("Stream has fallen behind ({HL_NODE} failed?)");
+                if let Some(ref sec) = secrets {
+                    crate::slack_alerts::send_alert_before_exit(
+                        Some(sec),
+                        crate::slack_alerts::AlertType::NodeExecutionBehind,
+                        &error_message,
+                        ""
+                    ).await;
                 }
+                return Err(error_message.into());
             }
-            () = sleep(Duration::from_secs(5)) => {
-                let listener = listener.lock().await;
-                if listener.is_ready() {
-                    return Err(format!("Stream has fallen behind ({HL_NODE} failed?)").into());
-                }
-            }
+            // Not ready yet — keep waiting.
+            continue;
+        }
+
+        // Propagate inner errors immediately
+        if let Err(e) = outcome.unwrap() {
+            return Err(e);
         }
     }
 }
@@ -235,7 +306,7 @@ impl OrderBookListener {
     pub(crate) const fn is_ready(&self) -> bool {
         self.order_book_state.is_some()
     }
-    
+
     pub(crate) fn mark_ready_without_snapshot(&mut self) {
         use crate::order_book::multi_book::Snapshots;
         use std::collections::HashMap;
@@ -325,7 +396,7 @@ impl OrderBookListener {
         self.fetched_snapshot_cache = Some(VecDeque::new());
     }
 
-    // tkae the cached updates and stop collecting updates
+    // take the cached updates and stop collecting updates
     fn take_cache(&mut self) -> VecDeque<(Batch<NodeDataOrderStatus>, Batch<NodeDataOrderDiff>)> {
         self.fetched_snapshot_cache.take().unwrap_or_default()
     }
@@ -354,7 +425,7 @@ impl OrderBookListener {
         self.order_book_state.as_mut().map(|o| o.compute_snapshot())
     }
 
-    // prevent snapshotting mutiple times at the same height
+    // prevent snapshotting multiple times at the same height
     fn l2_snapshots(&mut self, prevent_future_snaps: bool) -> Option<(u64, L2Snapshots)> {
         self.order_book_state.as_mut().and_then(|o| o.l2_snapshots(prevent_future_snaps))
     }
@@ -365,9 +436,7 @@ impl OrderBookListener {
         if event.kind.is_create() {
             info!("-- Event: {} created --", new_path.display());
             self.on_file_creation(new_path.clone(), event_source)?;
-        }
-        // Check for `Modify` event (only if the file is already initialized)
-        else {
+        } else {
             // If we are not tracking anything right now, we treat a file update as declaring that it has been created.
             // Unfortunately, we miss the update that occurs at this time step.
             // We go to the end of the file to read for updates after that.

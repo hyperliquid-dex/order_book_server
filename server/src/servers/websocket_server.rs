@@ -33,7 +33,7 @@ use tokio::{
     },
 };
 
-pub async fn run_websocket_server(address: &str, ignore_spot: bool) -> Result<()> {
+pub async fn run_websocket_server(address: &str, ignore_spot: bool, secrets: Option<crate::config::Secrets>) -> Result<()> {
     let (internal_message_tx, _) = channel::<Arc<InternalMessage>>(100);
 
     // Central task: listen to messages and forward them for distribution
@@ -45,9 +45,19 @@ pub async fn run_websocket_server(address: &str, ignore_spot: bool) -> Result<()
     let listener = Arc::new(Mutex::new(listener));
     {
         let listener = listener.clone();
+        let secrets_for_listener = secrets.clone();
+        let secrets_for_alert = secrets.clone();
         tokio::spawn(async move {
-            if let Err(err) = hl_listen(listener, home_dir).await {
+            if let Err(err) = hl_listen(listener, home_dir, secrets_for_listener).await {
                 error!("Listener fatal error: {err}");
+                if let Some(ref sec) = secrets_for_alert {
+                    crate::slack_alerts::send_alert_before_exit(
+                        Some(sec),
+                        crate::slack_alerts::AlertType::ListenerFatalError,
+                        &format!("Listener fatal error: {err}"),
+                        ""
+                    ).await;
+                }
                 std::process::exit(1);
             }
         });
@@ -65,6 +75,14 @@ pub async fn run_websocket_server(address: &str, ignore_spot: bool) -> Result<()
 
     if let Err(err) = axum::serve(listener, app.into_make_service()).await {
         error!("Server fatal error: {err}");
+        if let Some(ref sec) = secrets {
+            crate::slack_alerts::send_alert_before_exit(
+                Some(sec),
+                crate::slack_alerts::AlertType::ServerFatalError,
+                &format!("Server fatal error: {err}"),
+                ""
+            ).await;
+        }
         std::process::exit(2);
     }
 
