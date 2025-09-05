@@ -16,13 +16,15 @@ use alloy::primitives::Address;
 use fs::File;
 use log::{error, info};
 use notify::{Event, RecursiveMode, Watcher, recommended_watcher};
+use serde::Serialize;
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet, VecDeque},
+    fmt::Write as _,
     io::{Read, Seek, SeekFrom},
     path::PathBuf,
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use tokio::{
     sync::{
@@ -50,6 +52,9 @@ pub(crate) async fn hl_listen(
     info!("Monitoring order status directory: {}", order_statuses_dir.display());
     info!("Monitoring order diffs directory: {}", order_diffs_dir.display());
     info!("Monitoring fills directory: {}", fills_dir.display());
+    
+    // Get hostname for alerts
+    let hostname = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string());
 
     // monitoring the directory via the notify crate (gives file system events)
     let (fs_event_tx, mut fs_event_rx) = unbounded_channel();
@@ -92,26 +97,31 @@ pub(crate) async fn hl_listen(
                 // ---- filesystem events ----
                 event = fs_event_rx.recv() =>  match event {
                     Some(Ok(event)) => {
+                        {
+                            listener.lock().await.note_fs_event();
+                        }
                         if event.kind.is_create() || event.kind.is_modify() {
-                            let new_path = &event.paths[0];
-                            if new_path.starts_with(&order_statuses_dir) && new_path.is_file() {
-                                listener
-                                    .lock()
-                                    .await
-                                    .process_update(&event, new_path, EventSource::OrderStatuses)
-                                    .map_err(|err| format!("Order status processing error: {err}"))?;
-                            } else if new_path.starts_with(&fills_dir) && new_path.is_file() {
-                                listener
-                                    .lock()
-                                    .await
-                                    .process_update(&event, new_path, EventSource::Fills)
-                                    .map_err(|err| format!("Fill update processing error: {err}"))?;
-                            } else if new_path.starts_with(&order_diffs_dir) && new_path.is_file() {
-                                listener
-                                    .lock()
-                                    .await
-                                    .process_update(&event, new_path, EventSource::OrderDiffs)
-                                    .map_err(|err| format!("Book diff processing error: {err}"))?;
+                            for new_path in &event.paths {
+                                if !new_path.is_file() { continue; }
+                                if new_path.starts_with(&order_statuses_dir) {
+                                    listener
+                                        .lock()
+                                        .await
+                                        .process_update(&event, new_path, EventSource::OrderStatuses)
+                                        .map_err(|err| format!("Order status processing error: {err}"))?;
+                                } else if new_path.starts_with(&fills_dir) {
+                                    listener
+                                        .lock()
+                                        .await
+                                        .process_update(&event, new_path, EventSource::Fills)
+                                        .map_err(|err| format!("Fill update processing error: {err}"))?;
+                                } else if new_path.starts_with(&order_diffs_dir) {
+                                    listener
+                                        .lock()
+                                        .await
+                                        .process_update(&event, new_path, EventSource::OrderDiffs)
+                                        .map_err(|err| format!("Book diff processing error: {err}"))?;
+                                }
                             }
                         }
                         Ok::<(), Error>(())
@@ -119,12 +129,15 @@ pub(crate) async fn hl_listen(
                     Some(Err(err)) => {
                         error!("Watcher error: {err}");
                         let error_message = format!("Watcher error: {err}");
+                        let diag = listener.lock().await.diagnostics_json(Instant::now(), skip_initial_snapshot);
+                        error!("Watcher error details | ctx={}", diag);
                         if let Some(ref sec) = secrets {
-                            crate::slack_alerts::send_alert_before_exit(
+                            crate::slack_alerts::send_alert_before_exit_with_details(
                                 Some(sec),
                                 crate::slack_alerts::AlertType::FileWatcherError,
                                 &error_message,
-                                ""
+                                &hostname,
+                                &diag
                             ).await;
                         }
                         Err(error_message.into())
@@ -132,12 +145,15 @@ pub(crate) async fn hl_listen(
                     None => {
                         error!("Channel closed. Listener exiting");
                         let error_message = "Channel closed.";
+                        let diag = listener.lock().await.diagnostics_json(Instant::now(), skip_initial_snapshot);
+                        error!("Channel closed details | ctx={}", diag);
                         if let Some(ref sec) = secrets {
-                            crate::slack_alerts::send_alert_before_exit(
+                            crate::slack_alerts::send_alert_before_exit_with_details(
                                 Some(sec),
                                 crate::slack_alerts::AlertType::ChannelError,
                                 error_message,
-                                ""
+                                &hostname,
+                                &diag
                             ).await;
                         }
                         Err(error_message.into())
@@ -146,27 +162,36 @@ pub(crate) async fn hl_listen(
 
                 // ---- snapshot fetch task results ----
                 snapshot_fetch_res = snapshot_fetch_task_rx.recv() => {
+                    // Clear the in-flight marker regardless of success/failure
+                    listener.lock().await.snapshot_in_flight_since = None;
+                    
                     match snapshot_fetch_res {
                         None => {
                             let error_message = "Snapshot fetch task sender dropped";
+                            let diag = listener.lock().await.diagnostics_json(Instant::now(), skip_initial_snapshot);
+                            error!("Snapshot fetch task sender dropped | ctx={}", diag);
                             if let Some(ref sec) = secrets {
-                                crate::slack_alerts::send_alert_before_exit(
+                                crate::slack_alerts::send_alert_before_exit_with_details(
                                     Some(sec),
                                     crate::slack_alerts::AlertType::ChannelError, // reuse existing type
                                     error_message,
-                                    ""
+                                    &hostname,
+                                    &diag
                                 ).await;
                             }
                             Err(error_message.into())
                         }
                         Some(Err(err)) => {
                             let error_message = format!("Abci state reading error: {err}");
+                            let diag = listener.lock().await.diagnostics_json(Instant::now(), skip_initial_snapshot);
+                            error!("ABCI state reading error | ctx={}", diag);
                             if let Some(ref sec) = secrets {
-                                crate::slack_alerts::send_alert_before_exit(
+                                crate::slack_alerts::send_alert_before_exit_with_details(
                                     Some(sec),
-                                    crate::slack_alerts::AlertType::NodeExecutionBehind, // or a dedicated ABCI error type if you add one
+                                    crate::slack_alerts::AlertType::SnapshotSyncError,
                                     &error_message,
-                                    ""
+                                    &hostname,
+                                    &diag
                                 ).await;
                             }
                             Err(error_message.into())
@@ -178,6 +203,9 @@ pub(crate) async fn hl_listen(
                 // ---- periodic snapshot ticker ----
                 _ = ticker.tick() => {
                     if !skip_initial_snapshot || listener.lock().await.is_ready() {
+                        // Mark snapshot as in-flight before spawning the task
+                        listener.lock().await.snapshot_in_flight_since = Some(Instant::now());
+                        
                         let listener = listener.clone();
                         let snapshot_fetch_task_tx = snapshot_fetch_task_tx.clone();
                         fetch_snapshot(dir.clone(), listener, snapshot_fetch_task_tx, ignore_spot);
@@ -190,14 +218,58 @@ pub(crate) async fn hl_listen(
         // If timeout elapsed (no inner branch fired within WATCHDOG), and we are ready → liveness failure.
         if outcome.is_err() {
             let listener_guard = listener.lock().await;
+            
+            // Check if a snapshot is in flight
+            if let Some(snapshot_start) = listener_guard.snapshot_in_flight_since {
+                let snapshot_duration = Instant::now().duration_since(snapshot_start);
+                
+                // Give snapshots more time (30 seconds) before considering it a timeout
+                const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(30);
+                if snapshot_duration < SNAPSHOT_TIMEOUT {
+                    // Snapshot still processing within reasonable time, continue
+                    drop(listener_guard);
+                    continue;
+                }
+                // If snapshot is taking too long, fall through to timeout handling
+            }
+            
             if listener_guard.is_ready() {
-                let error_message = format!("Stream has fallen behind ({HL_NODE} failed?)");
+                // Build structured diagnostics for logs + Slack "details"
+                let diag = listener_guard.diagnostics_json(Instant::now(), skip_initial_snapshot);
+                let mut error_message = format!("Stream has fallen behind ({HL_NODE} failed?)");
+                
+                // Also include a terse inline summary in the log line itself
+                let status_front = listener_guard.order_status_cache.front().map(|b| b.block_number());
+                let diff_front = listener_guard.order_diff_cache.front().map(|b| b.block_number());
+                let current_height = listener_guard.order_book_state.as_ref().map(|s| s.height());
+                let last_prog_ms = listener_guard.last_progress_at
+                    .map(|t| Instant::now().saturating_duration_since(t).as_millis());
+                let last_fs_ms = listener_guard.last_fs_event_at
+                    .map(|t| Instant::now().saturating_duration_since(t).as_millis());
+                let _ = write!(
+                    &mut error_message,
+                    " | h={:?} status_front={:?} diff_front={:?} last_prog_ms={:?} last_fs_ms={:?} skip_init={}",
+                    current_height, status_front, diff_front, last_prog_ms, last_fs_ms, skip_initial_snapshot
+                );
+
+                // Check if upstream files have advanced
+                let upstream_moved = listener_guard.upstream_advanced_since_last_seen(&order_statuses_dir, &fills_dir, &order_diffs_dir);
+                let alert_type = if upstream_moved {
+                    crate::slack_alerts::AlertType::FileWatcherError
+                } else {
+                    crate::slack_alerts::AlertType::NodeExecutionBehind
+                };
+                
+                // Log with structured context (easy to grep/parse)
+                error!("{} | ctx={}", error_message, diag);
+                
                 if let Some(ref sec) = secrets {
-                    crate::slack_alerts::send_alert_before_exit(
+                    crate::slack_alerts::send_alert_before_exit_with_details(
                         Some(sec),
-                        crate::slack_alerts::AlertType::NodeExecutionBehind,
+                        alert_type,
                         &error_message,
-                        ""
+                        "",
+                        &diag
                     ).await;
                 }
                 return Err(error_message.into());
@@ -281,6 +353,17 @@ pub(crate) struct OrderBookListener {
     // Only Some when we want it to collect updates
     fetched_snapshot_cache: Option<VecDeque<(Batch<NodeDataOrderStatus>, Batch<NodeDataOrderDiff>)>>,
     internal_message_tx: Option<Sender<Arc<InternalMessage>>>,
+    
+    // --- Liveness/diagnostics ---
+    last_progress_at: Option<Instant>,
+    last_fs_event_at: Option<Instant>,
+    last_height: Option<u64>,
+    snapshot_in_flight_since: Option<Instant>,
+    
+    // --- Upstream file metadata tracking ---
+    last_status_meta: Option<(u64, SystemTime)>,
+    last_fills_meta: Option<(u64, SystemTime)>,
+    last_diffs_meta: Option<(u64, SystemTime)>,
 }
 
 impl OrderBookListener {
@@ -296,6 +379,13 @@ impl OrderBookListener {
             internal_message_tx,
             order_diff_cache: BatchQueue::new(),
             order_status_cache: BatchQueue::new(),
+            last_progress_at: None,
+            last_fs_event_at: None,
+            last_height: None,
+            snapshot_in_flight_since: None,
+            last_status_meta: None,
+            last_fills_meta: None,
+            last_diffs_meta: None,
         }
     }
 
@@ -318,6 +408,82 @@ impl OrderBookListener {
 
     pub(crate) fn universe(&self) -> HashSet<Coin> {
         self.order_book_state.as_ref().map_or_else(HashSet::new, OrderBookState::compute_universe)
+    }
+
+    // --- Liveness helpers ---
+    fn note_progress(&mut self, height: u64) {
+        self.last_progress_at = Some(Instant::now());
+        self.last_height = Some(self.last_height.map_or(height, |h| h.max(height)));
+    }
+
+    fn note_fs_event(&mut self) {
+        self.last_fs_event_at = Some(Instant::now());
+    }
+
+    fn diagnostics_json(&self, now: Instant, skip_initial_snapshot: bool) -> String {
+        #[derive(Serialize)]
+        struct Diag<'a> {
+            ready: bool,
+            height: Option<u64>,
+            status_front: Option<u64>,
+            diff_front: Option<u64>,
+            last_progress_ms_ago: Option<u128>,
+            last_fs_event_ms_ago: Option<u128>,
+            skip_initial_snapshot: bool,
+            ignore_spot: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            last_height: Option<u64>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            node: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            snapshot_in_flight_ms: Option<u128>,
+        }
+
+        let status_front = self.order_status_cache.front().map(|b| b.block_number());
+        let diff_front   = self.order_diff_cache.front().map(|b| b.block_number());
+        let last_prog    = self.last_progress_at.map(|t| now.saturating_duration_since(t).as_millis());
+        let last_fs      = self.last_fs_event_at.map(|t| now.saturating_duration_since(t).as_millis());
+        let height       = self.order_book_state.as_ref().map(|s| s.height());
+        let snapshot_ms  = self.snapshot_in_flight_since.map(|t| now.saturating_duration_since(t).as_millis());
+        
+        let diag = Diag {
+            ready: self.is_ready(),
+            height,
+            status_front,
+            diff_front,
+            last_progress_ms_ago: last_prog,
+            last_fs_event_ms_ago: last_fs,
+            skip_initial_snapshot,
+            ignore_spot: self.ignore_spot,
+            last_height: self.last_height,
+            node: Some(HL_NODE),
+            snapshot_in_flight_ms: snapshot_ms,
+        };
+        serde_json::to_string(&diag).unwrap_or_else(|_| "{\"diag\":\"serialize_failed\"}".into())
+    }
+
+    fn upstream_advanced_since_last_seen(&self, status_dir: &PathBuf, fills_dir: &PathBuf, diffs_dir: &PathBuf) -> bool {
+        fn dir_changed(dir: &PathBuf, last: Option<(u64, SystemTime)>) -> bool {
+            // best effort: check newest file in the dir
+            let Ok(mut rd) = fs::read_dir(dir) else { return false; };
+            let mut newest: Option<(u64, SystemTime)> = None;
+            while let Some(Ok(e)) = rd.next() {
+                let Ok(md) = e.metadata() else { continue; };
+                if !md.is_file() { continue; }
+                let mt = md.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                if newest.map(|(_, m)| mt > m).unwrap_or(true) {
+                    newest = Some((md.len(), mt));
+                }
+            }
+            if let (Some((cur_len, cur_mt)), Some((last_len, last_mt))) = (newest, last) {
+                cur_len > last_len || cur_mt > last_mt
+            } else {
+                false
+            }
+        }
+        dir_changed(status_dir, self.last_status_meta)
+            || dir_changed(fills_dir, self.last_fills_meta)
+            || dir_changed(diffs_dir, self.last_diffs_meta)
     }
 
     #[allow(clippy::type_complexity)]
@@ -350,13 +516,19 @@ impl OrderBookListener {
     fn receive_batch(&mut self, updates: EventBatch) -> Result<()> {
         match updates {
             EventBatch::Orders(batch) => {
+                let h = batch.block_number();
                 self.order_status_cache.push(batch);
+                // mark progress on new data
+                self.note_progress(h);
             }
             EventBatch::BookDiffs(batch) => {
+                let h = batch.block_number();
                 self.order_diff_cache.push(batch);
+                self.note_progress(h);
             }
             EventBatch::Fills(batch) => {
                 if self.last_fill.is_none_or(|height| height < batch.block_number()) {
+                    self.note_progress(batch.block_number());
                     // send fill updates if we received a new update
                     if let Some(tx) = &self.internal_message_tx {
                         let tx = tx.clone();
@@ -370,10 +542,17 @@ impl OrderBookListener {
         }
         if self.is_ready() {
             if let Some((order_statuses, order_diffs)) = self.pop_cache() {
+                // Track the height from the updates
+                let height = order_statuses.block_number().max(order_diffs.block_number());
+                
                 self.order_book_state
                     .as_mut()
                     .map(|book| book.apply_updates(order_statuses.clone(), order_diffs.clone()))
                     .transpose()?;
+                    
+                // Mark progress after successful update
+                self.note_progress(height);
+                
                 if let Some(cache) = &mut self.fetched_snapshot_cache {
                     cache.push_back((order_statuses.clone(), order_diffs.clone()));
                 }
@@ -416,6 +595,7 @@ impl OrderBookListener {
         }
         if !retry {
             self.order_book_state = Some(new_order_book);
+            self.note_progress(height);
             info!("Order book ready");
         }
     }
@@ -433,6 +613,16 @@ impl OrderBookListener {
 
 impl OrderBookListener {
     fn process_update(&mut self, event: &Event, new_path: &PathBuf, event_source: EventSource) -> Result<()> {
+        // Track file metadata for upstream change detection
+        if let Ok(md) = fs::metadata(new_path) {
+            let snap = (md.len(), md.modified().unwrap_or(SystemTime::UNIX_EPOCH));
+            match event_source {
+                EventSource::OrderStatuses => self.last_status_meta = Some(snap),
+                EventSource::Fills => self.last_fills_meta = Some(snap),
+                EventSource::OrderDiffs => self.last_diffs_meta = Some(snap),
+            }
+        }
+        
         if event.kind.is_create() {
             info!("-- Event: {} created --", new_path.display());
             self.on_file_creation(new_path.clone(), event_source)?;
