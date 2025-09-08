@@ -11,13 +11,8 @@ use crate::{
         subscription::{ClientMessage, DEFAULT_LEVELS, ServerResponse, Subscription, SubscriptionManager},
     },
 };
-use axum::{
-    Router,
-    extract::ws::{Message, WebSocket, WebSocketUpgrade},
-    response::IntoResponse,
-    routing::get,
-};
-use futures_util::StreamExt;
+use axum::{Router, response::IntoResponse, routing::get};
+use futures_util::{SinkExt, StreamExt};
 use log::{error, info};
 use std::{
     collections::{HashMap, HashSet},
@@ -32,8 +27,9 @@ use tokio::{
         broadcast::{Sender, channel},
     },
 };
+use yawc::{FrameView, OpCode, WebSocket};
 
-pub async fn run_websocket_server(address: &str, ignore_spot: bool) -> Result<()> {
+pub async fn run_websocket_server(address: &str, ignore_spot: bool, compression_level: u32) -> Result<()> {
     let (internal_message_tx, _) = channel::<Arc<InternalMessage>>(100);
 
     // Central task: listen to messages and forward them for distribution
@@ -52,11 +48,16 @@ pub async fn run_websocket_server(address: &str, ignore_spot: bool) -> Result<()
             }
         });
     }
+
+    let websocket_opts =
+        yawc::Options::default().with_compression_level(yawc::CompressionLevel::new(compression_level));
     let app = Router::new().route(
         "/ws",
         get({
             let internal_message_tx = internal_message_tx.clone();
-            async move |ws| ws_handler(ws, internal_message_tx.clone(), listener.clone(), ignore_spot)
+            async move |ws_upgrade| {
+                ws_handler(ws_upgrade, internal_message_tx.clone(), listener.clone(), ignore_spot, websocket_opts)
+            }
         }),
     );
 
@@ -72,12 +73,26 @@ pub async fn run_websocket_server(address: &str, ignore_spot: bool) -> Result<()
 }
 
 fn ws_handler(
-    ws: WebSocketUpgrade,
+    incoming: yawc::IncomingUpgrade,
     internal_message_tx: Sender<Arc<InternalMessage>>,
     listener: Arc<Mutex<OrderBookListener>>,
     ignore_spot: bool,
+    websocket_opts: yawc::Options,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, internal_message_tx, listener, ignore_spot))
+    let (resp, fut) = incoming.upgrade(websocket_opts).unwrap();
+    tokio::spawn(async move {
+        let ws = match fut.await {
+            Ok(ok) => ok,
+            Err(err) => {
+                log::error!("failed to upgrade websocket connection: {err}");
+                return;
+            }
+        };
+
+        handle_socket(ws, internal_message_tx, listener, ignore_spot).await
+    });
+
+    resp
 }
 
 async fn handle_socket(
@@ -130,33 +145,37 @@ async fn handle_socket(
             }
 
             msg = socket.next() => {
-                match msg {
-                    Some(Ok(Message::Text(text))) => {
-                        info!("Client message: {text}");
+                if let Some(frame) = msg {
+                    match frame.opcode {
+                        OpCode::Text => {
+                            let text = match std::str::from_utf8(&frame.payload) {
+                                Ok(text) => text,
+                                Err(err) => {
+                                    log::warn!("unable to parse websocket content: {err}: {:?}", frame.payload.as_ref());
+                                    // deserves to close the connection because the payload is not a valid utf8 string.
+                                    return;
+                                }
+                            };
 
-                        if let Ok(value) = serde_json::from_str::<ClientMessage>(&text) {
-                            receive_client_message(&mut socket, &mut manager, value, &universe, listener.clone()).await;
+                            info!("Client message: {text}");
+
+                            if let Ok(value) = serde_json::from_str::<ClientMessage>(text) {
+                                receive_client_message(&mut socket, &mut manager, value, &universe, listener.clone()).await;
+                            }
+                            else {
+                                let msg = ServerResponse::Error(format!("Error parsing JSON into valid websocket request: {text}"));
+                                send_socket_message(&mut socket, msg).await;
+                            }
                         }
-                        else {
-                            let msg = ServerResponse::Error(format!("Error parsing JSON into valid websocket request: {text}"));
-                            send_socket_message(&mut socket, msg).await;
+                        OpCode::Close => {
+                            info!("Client disconnected");
+                            return;
                         }
+                        _ => {}
                     }
-                    Some(Ok(Message::Close(_))) => {
-                        info!("Client disconnected");
-                        return;
-                    }
-                    Some(Ok(_)) => {
-                        return;
-                    }
-                    Some(Err(err)) => {
-                        error!("WebSocket error: {err}");
-                        return;
-                    }
-                    None => {
-                        info!("Client connection closed");
-                        return;
-                    }
+                } else {
+                    info!("Client connection closed");
+                    return;
                 }
             }
         }
@@ -214,7 +233,7 @@ async fn send_socket_message(socket: &mut WebSocket, msg: ServerResponse) {
     let msg = serde_json::to_string(&msg);
     match msg {
         Ok(msg) => {
-            if let Err(err) = socket.send(Message::Text(msg.into())).await {
+            if let Err(err) = socket.send(FrameView::text(msg)).await {
                 error!("Failed to send: {err}");
             }
         }
