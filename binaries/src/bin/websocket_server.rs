@@ -25,6 +25,12 @@ struct Args {
     /// documentation for <https://docs.rs/flate2/1.1.2/flate2/struct.Compression.html#method.new> for more info.
     #[arg(long)]
     websocket_compression_level: Option<u32>,
+
+    /// Inactivity timeout in seconds before server exits.
+    /// If no node events are observed for this duration, the process exits.
+    /// Default is 5 seconds to match README behavior.
+    #[arg(long)]
+    inactivity_exit_secs: Option<u64>,
 }
 
 #[tokio::main]
@@ -37,7 +43,8 @@ async fn main() -> Result<()> {
     println!("Running websocket server on {full_address}");
 
     let compression_level = args.websocket_compression_level.unwrap_or(/* Some compression */ 1);
-    run_websocket_server(&full_address, true, compression_level).await?;
+    let inactivity_exit_secs = args.inactivity_exit_secs.unwrap_or(5);
+    run_websocket_server(&full_address, true, compression_level, inactivity_exit_secs).await?;
 
     Ok(())
 }

@@ -32,9 +32,11 @@ The `l4book` subscription first sends a snapshot of the entire book and then for
 
 ```bash
 cargo run --release --bin websocket_server -- --address 0.0.0.0 --port 8000
+# With custom inactivity timeout (e.g., 30s):
+cargo run --release --bin websocket_server -- --address 0.0.0.0 --port 8000 --inactivity-exit-secs 30
 ```
 
-If this local server does not detect the node writing down any new events, it will automatically exit after some amount of time (currently set to 5 seconds).
+If this local server does not detect the node writing down any new events, it will automatically exit after some amount of time (default 5 seconds; configurable via `--inactivity-exit-secs <secs>`).
 In addition, the local server periodically fetches order book snapshots from the node, and compares to its own internal state. If a difference is detected, it will exit.
 
 If you want logging, prepend the command with `RUST_LOG=info`.

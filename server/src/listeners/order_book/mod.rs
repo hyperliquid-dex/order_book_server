@@ -39,7 +39,7 @@ mod utils;
 
 // WARNING - this code assumes no other file system operations are occurring in the watched directories
 // if there are scripts running, this may not work as intended
-pub(crate) async fn hl_listen(listener: Arc<Mutex<OrderBookListener>>, dir: PathBuf) -> Result<()> {
+pub(crate) async fn hl_listen(listener: Arc<Mutex<OrderBookListener>>, dir: PathBuf, inactivity_exit_secs: u64) -> Result<()> {
     let order_statuses_dir = EventSource::OrderStatuses.event_source_dir(&dir).canonicalize()?;
     let fills_dir = EventSource::Fills.event_source_dir(&dir).canonicalize()?;
     let order_diffs_dir = EventSource::OrderDiffs.event_source_dir(&dir).canonicalize()?;
@@ -122,7 +122,7 @@ pub(crate) async fn hl_listen(listener: Arc<Mutex<OrderBookListener>>, dir: Path
                 let snapshot_fetch_task_tx = snapshot_fetch_task_tx.clone();
                 fetch_snapshot(dir.clone(), listener, snapshot_fetch_task_tx, ignore_spot);
             }
-            () = sleep(Duration::from_secs(5)) => {
+            () = sleep(Duration::from_secs(inactivity_exit_secs)) => {
                 let listener = listener.lock().await;
                 if listener.is_ready() {
                     return Err(format!("Stream has fallen behind ({HL_NODE} failed?)").into());

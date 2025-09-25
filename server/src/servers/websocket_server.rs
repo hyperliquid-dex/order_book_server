@@ -29,7 +29,7 @@ use tokio::{
 };
 use yawc::{FrameView, OpCode, WebSocket};
 
-pub async fn run_websocket_server(address: &str, ignore_spot: bool, compression_level: u32) -> Result<()> {
+pub async fn run_websocket_server(address: &str, ignore_spot: bool, compression_level: u32, inactivity_exit_secs: u64) -> Result<()> {
     let (internal_message_tx, _) = channel::<Arc<InternalMessage>>(100);
 
     // Central task: listen to messages and forward them for distribution
@@ -42,7 +42,7 @@ pub async fn run_websocket_server(address: &str, ignore_spot: bool, compression_
     {
         let listener = listener.clone();
         tokio::spawn(async move {
-            if let Err(err) = hl_listen(listener, home_dir).await {
+            if let Err(err) = hl_listen(listener, home_dir, inactivity_exit_secs).await {
                 error!("Listener fatal error: {err}");
                 std::process::exit(1);
             }
