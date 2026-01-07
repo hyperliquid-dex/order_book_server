@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use alloy::primitives::Address;
+use alloy_primitives::Address;
 use fs::File;
 use log::{error, info};
 use notify::{Event, RecursiveMode, Watcher, recommended_watcher};
@@ -106,32 +106,35 @@ fn spawn_event_processor(
             let result = if event.kind.is_create() {
                 listener.lock().await.process_update(&event, new_path, event_source)
             } else {
-                let (data, current_height) = {
-                    let mut guard = listener.lock().await;
+                let mut guard = listener.lock().await;
+                let is_reading = guard.is_reading(event_source);
+                if !is_reading {
+                    // Not tracking a file yet - start tracking from end of file
+                    guard.start_tracking_file(new_path, event_source)
+                } else {
                     let data = guard.read_pending_data(event_source);
-                    let height = guard.current_height();
+                    let current_height = guard.current_height();
                     drop(guard);
-                    (data, height)
-                };
 
-                match data {
-                    Ok(Some(data)) => {
-                        let parse_result = parse_event_data(&data, event_source, current_height);
+                    match data {
+                        Ok(Some(data)) => {
+                            let parse_result = parse_event_data(&data, event_source, current_height);
 
-                        let mut guard = listener.lock().await;
-                        let apply_result = if parse_result.batches.is_empty() {
-                            Ok(())
-                        } else {
-                            guard.apply_batches(parse_result.batches)
-                        };
-                        if let Some(seek_bytes) = parse_result.failed_at_byte {
-                            #[allow(clippy::cast_possible_wrap)]
-                            guard.seek_back(event_source, seek_bytes as i64);
+                            let mut guard = listener.lock().await;
+                            let apply_result = if parse_result.batches.is_empty() {
+                                Ok(())
+                            } else {
+                                guard.apply_batches(parse_result.batches)
+                            };
+                            if let Some(seek_bytes) = parse_result.failed_at_byte {
+                                #[allow(clippy::cast_possible_wrap)]
+                                guard.seek_back(event_source, seek_bytes as i64);
+                            }
+                            apply_result
                         }
-                        apply_result
+                        Ok(None) => Ok(()),
+                        Err(err) => Err(err),
                     }
-                    Ok(None) => Ok(()),
-                    Err(err) => Err(err),
                 }
             };
 
@@ -533,6 +536,15 @@ impl OrderBookListener {
 
     pub(crate) fn current_height(&self) -> Option<u64> {
         self.order_book_state.as_ref().map(OrderBookState::height)
+    }
+
+    pub(crate) fn start_tracking_file(&mut self, path: &PathBuf, event_source: EventSource) -> Result<()> {
+        info!("-- Event: {} modified, tracking it now --", path.display());
+        let file = self.file_mut(event_source);
+        let mut new_file = File::open(path)?;
+        new_file.seek(SeekFrom::End(0))?;
+        *file = Some(new_file);
+        Ok(())
     }
 }
 

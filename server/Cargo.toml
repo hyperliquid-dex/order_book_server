@@ -16,9 +16,9 @@ serde_json = "1.0"
 simd-json = { version = "0.14", features = ["serde_impl"] }
 futures-util = "0.3.31"
 rayon = "1.10"
-alloy = "1.0.22"
+alloy-primitives = { version = "1.0.22", features = ["serde"] }
 strum_macros = "0.27.2"
-reqwest = "0.12.22"
+reqwest = { version = "0.13.1", features = ["json"] }
 yawc = { version = "0.2.6", features = ["axum"] }
 
 [lints]

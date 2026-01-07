@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use alloy::primitives::Address;
+use alloy_primitives::Address;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 

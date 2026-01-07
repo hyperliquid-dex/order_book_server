@@ -105,7 +105,7 @@ where
 mod tests {
     use std::{fs::create_dir_all, path::PathBuf};
 
-    use alloy::primitives::Address;
+    use alloy_primitives::Address;
     use itertools::Itertools;
 
     use crate::{
