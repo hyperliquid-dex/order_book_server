@@ -84,7 +84,7 @@ pub(crate) fn parse_event_data(data: &str, event_source: EventSource, current_he
                 bytes_processed += line.len() + 1;
             }
             Err(err) => {
-                error!(
+                debug!(
                     "{event_source} serialization error {err}, height: {current_height:?}, line: {:?}",
                     &line[..line.len().min(100)],
                 );
