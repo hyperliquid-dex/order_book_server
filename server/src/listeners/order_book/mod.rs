@@ -76,6 +76,7 @@ pub(crate) async fn hl_listen(
     watcher.watch(&order_diffs_dir, RecursiveMode::Recursive)?;
     let start = Instant::now() + Duration::from_secs(5);
     let mut ticker = interval_at(start, Duration::from_secs(10));
+    let mut last_fills_event: Option<Instant> = None;
     loop {
         tokio::select! {
             event = fs_event_rx.recv() =>  match event {
@@ -89,6 +90,12 @@ pub(crate) async fn hl_listen(
                                 .process_update(&event, new_path, EventSource::OrderStatuses)
                                 .map_err(|err| format!("Order status processing error: {err}"))?;
                         } else if new_path.starts_with(&fills_dir) && new_path.is_file() {
+                            let now = Instant::now();
+                            if let Some(last) = last_fills_event {
+                                let delta_ms = now.duration_since(last);
+                                info!("Fills file event delta: {delta_ms:?}");
+                            }
+                            last_fills_event = Some(now);
                             listener
                                 .lock()
                                 .await
