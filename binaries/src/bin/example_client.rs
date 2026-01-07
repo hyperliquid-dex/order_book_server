@@ -1,4 +1,6 @@
 #![allow(unused_crate_dependencies)]
+use std::time::Duration;
+
 use chrono::Utc;
 use clap::{Parser, ValueEnum};
 use futures_util::{SinkExt, StreamExt};
@@ -59,7 +61,7 @@ async fn main() -> Result<()> {
         match msg {
             Ok(Message::Text(txt)) => {
                 if let Some(latency) = extract_latency(&txt, now_ms) {
-                    println!("Received {msg_cnt} [latency: {latency}ms]: {txt}");
+                    println!("Received {msg_cnt} [latency: {latency:?}]: {txt}");
                 } else {
                     println!("Received {msg_cnt}: {txt}");
                 }
@@ -84,18 +86,18 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn extract_latency(json_str: &str, now_ms: i64) -> Option<i64> {
+fn extract_latency(json_str: &str, now_ms: i64) -> Option<Duration> {
     let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
 
     if let Some(time) = parsed.get("data").and_then(|d| d.get("time")).and_then(serde_json::Value::as_i64) {
-        return Some(now_ms - time);
+        return Some(Duration::from_millis((now_ms - time) as u64));
     }
 
     if let Some(data) = parsed.get("data").and_then(|d| d.as_array())
         && let Some(first) = data.first()
         && let Some(time) = first.get("time").and_then(serde_json::Value::as_i64)
     {
-        return Some(now_ms - time);
+        return Some(Duration::from_millis((now_ms - time) as u64));
     }
 
     None
