@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use log::warn;
+
 use crate::{
     listeners::order_book::{L2Snapshots, TimedSnapshots, utils::compute_l2_snapshots},
     order_book::{
@@ -105,18 +107,31 @@ impl OrderBookState {
                         #[allow(clippy::unwrap_used)]
                         inner_order.convert_trigger(time.try_into().unwrap());
                         self.order_book.add_order(inner_order);
+                    } else if coin.is_spot() {
+                        // Spot order status data can be inconsistent - warn and skip
+                        warn!("Missing order status for spot order, skipping: {diff:?}");
                     } else {
                         return Err(format!("Unable to find order opening status {diff:?}").into());
                     }
                 }
                 InnerOrderDiff::Update { new_sz, .. } => {
+                    let is_spot = coin.is_spot();
                     if !self.order_book.modify_sz(oid, coin, new_sz) {
-                        return Err(format!("Unable to find order on the book {diff:?}").into());
+                        if is_spot {
+                            warn!("Missing spot order for update, skipping: {diff:?}");
+                        } else {
+                            return Err(format!("Unable to find order on the book {diff:?}").into());
+                        }
                     }
                 }
                 InnerOrderDiff::Remove => {
+                    let is_spot = coin.is_spot();
                     if !self.order_book.cancel_order(oid, coin) {
-                        return Err(format!("Unable to find order on the book {diff:?}").into());
+                        if is_spot {
+                            warn!("Missing spot order for remove, skipping: {diff:?}");
+                        } else {
+                            return Err(format!("Unable to find order on the book {diff:?}").into());
+                        }
                     }
                 }
             }
