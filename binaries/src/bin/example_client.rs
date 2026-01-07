@@ -87,16 +87,15 @@ async fn main() -> Result<()> {
 fn extract_latency(json_str: &str, now_ms: i64) -> Option<i64> {
     let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
 
-    if let Some(time) = parsed.get("data").and_then(|d| d.get("time")).and_then(|t| t.as_i64()) {
+    if let Some(time) = parsed.get("data").and_then(|d| d.get("time")).and_then(serde_json::Value::as_i64) {
         return Some(now_ms - time);
     }
 
-    if let Some(data) = parsed.get("data").and_then(|d| d.as_array()) {
-        if let Some(first) = data.first() {
-            if let Some(time) = first.get("time").and_then(|t| t.as_i64()) {
-                return Some(now_ms - time);
-            }
-        }
+    if let Some(data) = parsed.get("data").and_then(|d| d.as_array())
+        && let Some(first) = data.first()
+        && let Some(time) = first.get("time").and_then(serde_json::Value::as_i64)
+    {
+        return Some(now_ms - time);
     }
 
     None

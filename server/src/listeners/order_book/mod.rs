@@ -284,7 +284,10 @@ fn fetch_snapshot(
                         if let Some(mut state) = state {
                             while state.height() < height {
                                 if let Some((order_statuses, order_diffs)) = cache.pop_front() {
-                                    state.apply_updates(order_statuses, order_diffs)?;
+                                    state.apply_updates(
+                                        Arc::unwrap_or_clone(order_statuses),
+                                        Arc::unwrap_or_clone(order_diffs),
+                                    )?;
                                 } else {
                                     return Err::<(), Error>("Not enough cached updates".into());
                                 }
@@ -321,7 +324,7 @@ pub(crate) struct OrderBookListener {
     order_diff_cache: BatchQueue<NodeDataOrderDiff>,
     order_status_cache: BatchQueue<NodeDataOrderStatus>,
     // Only Some when we want it to collect updates
-    fetched_snapshot_cache: Option<VecDeque<(Batch<NodeDataOrderStatus>, Batch<NodeDataOrderDiff>)>>,
+    fetched_snapshot_cache: Option<VecDeque<(Arc<Batch<NodeDataOrderStatus>>, Arc<Batch<NodeDataOrderDiff>>)>>,
     internal_message_tx: Option<Sender<Arc<InternalMessage>>>,
 }
 
@@ -404,12 +407,15 @@ impl OrderBookListener {
         if self.is_ready()
             && let Some((order_statuses, order_diffs)) = self.pop_cache()
         {
+            let order_statuses = Arc::new(order_statuses);
+            let order_diffs = Arc::new(order_diffs);
+
             self.order_book_state
                 .as_mut()
-                .map(|book| book.apply_updates(order_statuses.clone(), order_diffs.clone()))
+                .map(|book| book.apply_updates((*order_statuses).clone(), (*order_diffs).clone()))
                 .transpose()?;
             if let Some(cache) = &mut self.fetched_snapshot_cache {
-                cache.push_back((order_statuses.clone(), order_diffs.clone()));
+                cache.push_back((Arc::clone(&order_statuses), Arc::clone(&order_diffs)));
             }
             if let Some(tx) = &self.internal_message_tx {
                 let tx = tx.clone();
@@ -429,8 +435,8 @@ impl OrderBookListener {
         self.fetched_snapshot_cache = Some(VecDeque::new());
     }
 
-    // tkae the cached updates and stop collecting updates
-    fn take_cache(&mut self) -> VecDeque<(Batch<NodeDataOrderStatus>, Batch<NodeDataOrderDiff>)> {
+    // take the cached updates and stop collecting updates
+    fn take_cache(&mut self) -> VecDeque<(Arc<Batch<NodeDataOrderStatus>>, Arc<Batch<NodeDataOrderDiff>>)> {
         self.fetched_snapshot_cache.take().unwrap_or_default()
     }
 
@@ -629,7 +635,7 @@ pub(crate) struct TimedSnapshots {
 pub(crate) enum InternalMessage {
     Snapshot { l2_snapshots: L2Snapshots, time: u64 },
     Fills { batch: Batch<NodeDataFill> },
-    L4BookUpdates { diff_batch: Batch<NodeDataOrderDiff>, status_batch: Batch<NodeDataOrderStatus> },
+    L4BookUpdates { diff_batch: Arc<Batch<NodeDataOrderDiff>>, status_batch: Arc<Batch<NodeDataOrderStatus>> },
 }
 
 #[derive(Eq, PartialEq, Hash)]
