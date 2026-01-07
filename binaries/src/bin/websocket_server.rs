@@ -31,8 +31,8 @@ struct Args {
     #[arg(long)]
     data_dir: Option<PathBuf>,
 
-    /// Container's equivalent of data_dir, used for API requests when the HL node
-    /// runs in a container. If not specified, defaults to data_dir.
+    /// Container's equivalent of `data_dir`, used for API requests when the HL node
+    /// runs in a container. If not specified, defaults to `data_dir`.
     /// Example: --data-dir /data --container-data-dir /home/hluser
     #[arg(long)]
     container_data_dir: Option<PathBuf>,

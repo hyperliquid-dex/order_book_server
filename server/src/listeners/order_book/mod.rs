@@ -91,6 +91,56 @@ pub(crate) fn parse_event_data(data: &str, event_source: EventSource, current_he
     ParseResult { batches, failed_at_byte: None }
 }
 
+// Spawns a dedicated task to process events for a specific event source
+fn spawn_event_processor(
+    listener: Arc<Mutex<OrderBookListener>>,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>,
+    event_source: EventSource,
+    error_tx: UnboundedSender<Error>,
+) {
+    tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            let new_path = &event.paths[0];
+            let result = if event.kind.is_create() {
+                listener.lock().await.process_update(&event, new_path, event_source)
+            } else {
+                let (data, current_height) = {
+                    let mut guard = listener.lock().await;
+                    let data = guard.read_pending_data(event_source);
+                    let height = guard.current_height();
+                    drop(guard);
+                    (data, height)
+                };
+
+                match data {
+                    Ok(Some(data)) => {
+                        let parse_result = parse_event_data(&data, event_source, current_height);
+
+                        let mut guard = listener.lock().await;
+                        let apply_result = if parse_result.batches.is_empty() {
+                            Ok(())
+                        } else {
+                            guard.apply_batches(parse_result.batches)
+                        };
+                        if let Some(seek_bytes) = parse_result.failed_at_byte {
+                            #[allow(clippy::cast_possible_wrap)]
+                            guard.seek_back(event_source, seek_bytes as i64);
+                        }
+                        apply_result
+                    }
+                    Ok(None) => Ok(()),
+                    Err(err) => Err(err),
+                }
+            };
+
+            if let Err(err) = result {
+                drop(error_tx.send(format!("{event_source} processing error: {err}").into()));
+                return;
+            }
+        }
+    });
+}
+
 // WARNING - this code assumes no other file system operations are occurring in the watched directories
 // if there are scripts running, this may not work as intended
 #[allow(clippy::too_many_lines)]
@@ -120,6 +170,19 @@ pub(crate) async fn hl_listen(
         listener.ignore_spot
     };
 
+    // Channels for parallel event processing
+    let (fills_tx, fills_rx) = unbounded_channel::<Event>();
+    let (order_statuses_tx, order_statuses_rx) = unbounded_channel::<Event>();
+    let (order_diffs_tx, order_diffs_rx) = unbounded_channel::<Event>();
+
+    // Channel for processor errors
+    let (processor_error_tx, mut processor_error_rx) = unbounded_channel::<Error>();
+
+    // Spawn dedicated processor tasks for each event type
+    spawn_event_processor(listener.clone(), fills_rx, EventSource::Fills, processor_error_tx.clone());
+    spawn_event_processor(listener.clone(), order_statuses_rx, EventSource::OrderStatuses, processor_error_tx.clone());
+    spawn_event_processor(listener.clone(), order_diffs_rx, EventSource::OrderDiffs, processor_error_tx);
+
     // every so often, we fetch a new snapshot and the snapshot_fetch_task starts running.
     // Result is sent back along this channel (if error, we want to return to top level)
     let (snapshot_fetch_task_tx, mut snapshot_fetch_task_rx) = unbounded_channel::<Result<()>>();
@@ -132,12 +195,12 @@ pub(crate) async fn hl_listen(
     let mut last_fills_event: Option<Instant> = None;
     loop {
         tokio::select! {
-            event = fs_event_rx.recv() =>  match event {
+            event = fs_event_rx.recv() => match event {
                 Some(Ok(event)) => {
                     if event.kind.is_create() || event.kind.is_modify() {
                         let new_path = &event.paths[0];
-                        let event_source = if new_path.starts_with(&order_statuses_dir) && new_path.is_file() {
-                            Some(EventSource::OrderStatuses)
+                        if new_path.starts_with(&order_statuses_dir) && new_path.is_file() {
+                            drop(order_statuses_tx.send(event));
                         } else if new_path.starts_with(&fills_dir) && new_path.is_file() {
                             let now = Instant::now();
                             if let Some(last) = last_fills_event {
@@ -145,45 +208,9 @@ pub(crate) async fn hl_listen(
                                 info!("Fills file event delta: {delta_ms:?}");
                             }
                             last_fills_event = Some(now);
-                            Some(EventSource::Fills)
+                            drop(fills_tx.send(event));
                         } else if new_path.starts_with(&order_diffs_dir) && new_path.is_file() {
-                            Some(EventSource::OrderDiffs)
-                        } else {
-                            None
-                        };
-
-                        if let Some(event_source) = event_source {
-                            if event.kind.is_create() {
-                                listener
-                                    .lock()
-                                    .await
-                                    .process_update(&event, new_path, event_source)
-                                    .map_err(|err| format!("{event_source} processing error: {err}"))?;
-                            } else {
-                                let (data, current_height) = {
-                                    let mut guard = listener.lock().await;
-                                    let data = guard
-                                        .read_pending_data(event_source)
-                                        .map_err(|err| format!("{event_source} read error: {err}"))?;
-                                    let height = guard.current_height();
-                                    drop(guard);
-                                    (data, height)
-                                };
-
-                                if let Some(data) = data {
-                                    let parse_result = parse_event_data(&data, event_source, current_height);
-
-                                    let mut guard = listener.lock().await;
-                                    if !parse_result.batches.is_empty() {
-                                        guard.apply_batches(parse_result.batches)
-                                            .map_err(|err| format!("{event_source} apply error: {err}"))?;
-                                    }
-                                    if let Some(seek_bytes) = parse_result.failed_at_byte {
-                                        #[allow(clippy::cast_possible_wrap)]
-                                        guard.seek_back(event_source, seek_bytes as i64);
-                                    }
-                                }
-                            }
+                            drop(order_diffs_tx.send(event));
                         }
                     }
                 }
@@ -195,6 +222,10 @@ pub(crate) async fn hl_listen(
                     error!("Channel closed. Listener exiting");
                     return Err("Channel closed.".into());
                 }
+            },
+            Some(err) = processor_error_rx.recv() => {
+                error!("Event processor error: {err}");
+                return Err(err);
             },
             snapshot_fetch_res = snapshot_fetch_task_rx.recv() => {
                 match snapshot_fetch_res {
