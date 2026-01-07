@@ -1,3 +1,12 @@
+use std::{
+    collections::{HashMap, VecDeque},
+    path::{Path, PathBuf},
+};
+
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use reqwest::Client;
+use serde_json::json;
+
 use crate::{
     listeners::order_book::{L2SnapshotParams, L2Snapshots},
     order_book::{
@@ -10,14 +19,6 @@ use crate::{
         inner::InnerLevel,
         node_data::{Batch, NodeDataFill, NodeDataOrderDiff, NodeDataOrderStatus},
     },
-};
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use reqwest::Client;
-use serde_json::json;
-use std::collections::VecDeque;
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
 };
 
 pub(super) async fn process_rmp_file(dir: &Path) -> Result<PathBuf> {

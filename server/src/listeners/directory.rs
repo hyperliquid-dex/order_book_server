@@ -1,7 +1,9 @@
-use crate::{prelude::*, types::node_data::EventSource};
+use std::path::PathBuf;
+
 use fs::File;
 use io::Read;
-use std::path::PathBuf;
+
+use crate::{prelude::*, types::node_data::EventSource};
 
 // We want all of these functions to be synchronous just for ease of use since they are fast (for now)
 // Asynchronous stuff can be done in the listen function (waiting for next file event)
@@ -26,21 +28,23 @@ pub(crate) trait DirectoryListener {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        listeners::directory::{DirectoryListener, EventSource},
-        prelude::*,
-    };
-    use fs::{File, create_dir_all, read_dir, remove_dir_all, remove_file};
-    use log::{error, info};
-    use notify::{RecursiveMode, Watcher, recommended_watcher};
-    use rand::{Rng, SeedableRng, rngs::StdRng};
     use std::{
         io::{Seek, SeekFrom},
         path::{Path, PathBuf},
         sync::{Arc, Mutex},
         time::Duration,
     };
+
+    use fs::{File, create_dir_all, read_dir, remove_dir_all, remove_file};
+    use log::{error, info};
+    use notify::{RecursiveMode, Watcher, recommended_watcher};
+    use rand::{Rng, SeedableRng, rngs::StdRng};
     use tokio::{fs::File as TokioFile, io::AsyncWriteExt, sync::mpsc::unbounded_channel, time::sleep};
+
+    use crate::{
+        listeners::directory::{DirectoryListener, EventSource},
+        prelude::*,
+    };
 
     const MOCK_HL_DIR: &str = "tmp/ws_listener_test";
     const DATA: [&str; 2] = [

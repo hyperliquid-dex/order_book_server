@@ -1,3 +1,26 @@
+use std::{
+    cmp::Ordering,
+    collections::{HashMap, HashSet, VecDeque},
+    io::{Read, Seek, SeekFrom},
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
+
+use alloy::primitives::Address;
+use fs::File;
+use log::{error, info};
+use notify::{Event, RecursiveMode, Watcher, recommended_watcher};
+use tokio::{
+    sync::{
+        Mutex,
+        broadcast::Sender,
+        mpsc::{UnboundedSender, unbounded_channel},
+    },
+    time::{Instant, interval_at, sleep},
+};
+use utils::{BatchQueue, EventBatch, process_rmp_file, validate_snapshot_consistency};
+
 use crate::{
     HL_NODE,
     listeners::{directory::DirectoryListener, order_book::state::OrderBookState},
@@ -12,27 +35,6 @@ use crate::{
         node_data::{Batch, EventSource, NodeDataFill, NodeDataOrderDiff, NodeDataOrderStatus},
     },
 };
-use alloy::primitives::Address;
-use fs::File;
-use log::{error, info};
-use notify::{Event, RecursiveMode, Watcher, recommended_watcher};
-use std::{
-    cmp::Ordering,
-    collections::{HashMap, HashSet, VecDeque},
-    io::{Read, Seek, SeekFrom},
-    path::PathBuf,
-    sync::Arc,
-    time::Duration,
-};
-use tokio::{
-    sync::{
-        Mutex,
-        broadcast::Sender,
-        mpsc::{UnboundedSender, unbounded_channel},
-    },
-    time::{Instant, interval_at, sleep},
-};
-use utils::{BatchQueue, EventBatch, process_rmp_file, validate_snapshot_consistency};
 
 mod state;
 mod utils;

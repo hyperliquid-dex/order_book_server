@@ -1,7 +1,9 @@
-use crate::types::{L2Book, L4Book, Trade};
+use std::collections::HashSet;
+
 use log::info;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+
+use crate::types::{L2Book, L4Book, Trade};
 
 const MAX_LEVELS: usize = 100;
 pub(crate) const DEFAULT_LEVELS: usize = 20;
@@ -105,9 +107,8 @@ impl SubscriptionManager {
 
 #[cfg(test)]
 mod test {
-    use crate::types::subscription::Subscription;
-
     use super::{ClientMessage, ServerResponse};
+    use crate::types::subscription::Subscription;
 
     #[test]
     fn test_message_deserialization_subscription_response() {

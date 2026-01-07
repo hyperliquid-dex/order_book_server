@@ -1,7 +1,11 @@
-use crate::prelude::*;
+use std::{
+    fmt::{Debug, Formatter},
+    ops::Add,
+};
+
 use serde::{Deserialize, Serialize};
-use std::fmt::{Debug, Formatter};
-use std::ops::Add;
+
+use crate::prelude::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub(crate) enum Side {
