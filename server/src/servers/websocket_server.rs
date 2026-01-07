@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
     sync::Arc,
+    time::Duration,
 };
 
 use axum::{Router, response::IntoResponse, routing::get};
@@ -37,6 +38,7 @@ pub async fn run_websocket_server(
     compression_level: u32,
     data_dir: PathBuf,
     container_data_dir: PathBuf,
+    snapshot_interval_secs: Duration,
 ) -> Result<()> {
     let (internal_message_tx, _) = channel::<Arc<InternalMessage>>(100);
 
@@ -48,7 +50,7 @@ pub async fn run_websocket_server(
     {
         let listener = listener.clone();
         tokio::spawn(async move {
-            if let Err(err) = hl_listen(listener, data_dir, container_data_dir).await {
+            if let Err(err) = hl_listen(listener, data_dir, container_data_dir, snapshot_interval_secs).await {
                 error!("Listener fatal error: {err}");
                 std::process::exit(1);
             }

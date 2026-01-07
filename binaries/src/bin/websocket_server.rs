@@ -1,7 +1,8 @@
 #![allow(unused_crate_dependencies)]
-use std::{env::home_dir, net::Ipv4Addr, path::PathBuf};
+use std::{env::home_dir, net::Ipv4Addr, path::PathBuf, time::Duration};
 
 use clap::Parser;
+use humantime::parse_duration;
 use server::{Result, run_websocket_server};
 
 #[derive(Debug, Parser)]
@@ -36,6 +37,11 @@ struct Args {
     /// Example: --data-dir /data --container-data-dir /home/hluser
     #[arg(long)]
     container_data_dir: Option<PathBuf>,
+
+    /// Interval in seconds between snapshot validation checks.
+    /// Defaults to 30 seconds.
+    #[arg(long, default_value = "30s", value_parser = parse_duration)]
+    snapshot_interval_secs: Duration,
 }
 
 #[tokio::main]
@@ -50,7 +56,15 @@ async fn main() -> Result<()> {
     let compression_level = args.websocket_compression_level.unwrap_or(/* Some compression */ 1);
     let data_dir = args.data_dir.or_else(home_dir).ok_or("Could not determine data directory")?;
     let container_data_dir = args.container_data_dir.unwrap_or_else(|| data_dir.clone());
-    run_websocket_server(&full_address, true, compression_level, data_dir, container_data_dir).await?;
+    run_websocket_server(
+        &full_address,
+        true,
+        compression_level,
+        data_dir,
+        container_data_dir,
+        args.snapshot_interval_secs,
+    )
+    .await?;
 
     Ok(())
 }

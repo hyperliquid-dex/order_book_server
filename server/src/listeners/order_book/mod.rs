@@ -148,6 +148,7 @@ pub(crate) async fn hl_listen(
     listener: Arc<Mutex<OrderBookListener>>,
     dir: PathBuf,
     container_dir: PathBuf,
+    snapshot_interval_secs: Duration,
 ) -> Result<()> {
     let order_statuses_dir = EventSource::OrderStatuses.event_source_dir(&dir).canonicalize()?;
     let fills_dir = EventSource::Fills.event_source_dir(&dir).canonicalize()?;
@@ -191,7 +192,7 @@ pub(crate) async fn hl_listen(
     watcher.watch(&fills_dir, RecursiveMode::Recursive)?;
     watcher.watch(&order_diffs_dir, RecursiveMode::Recursive)?;
     let start = Instant::now() + Duration::from_secs(5);
-    let mut ticker = interval_at(start, Duration::from_secs(10));
+    let mut ticker = interval_at(start, snapshot_interval_secs);
     let mut last_fills_event: Option<Instant> = None;
     loop {
         tokio::select! {
