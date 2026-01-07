@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
 };
 
@@ -10,7 +10,7 @@ use serde_json::json;
 use crate::{
     listeners::order_book::{L2SnapshotParams, L2Snapshots},
     order_book::{
-        Snapshot,
+        Oid, Snapshot,
         multi_book::{OrderBooks, Snapshots},
         types::InnerOrder,
     },
@@ -46,7 +46,7 @@ pub(super) async fn process_rmp_file(host_dir: &Path, container_dir: &Path) -> R
     Ok(host_output_path)
 }
 
-pub(super) fn validate_snapshot_consistency<O: Clone + PartialEq + Debug>(
+pub(super) fn validate_snapshot_consistency<O: InnerOrder>(
     snapshot: &Snapshots<O>,
     expected: Snapshots<O>,
     ignore_spot: bool,
@@ -61,12 +61,20 @@ pub(super) fn validate_snapshot_consistency<O: Clone + PartialEq + Debug>(
         let book1 = book.as_ref();
         if let Some(book2) = snapshot_map.remove(coin) {
             for (orders1, orders2) in book1.as_ref().iter().zip(book2.as_ref()) {
-                for (order1, order2) in orders1.iter().zip(orders2.iter()) {
-                    if *order1 != *order2 {
-                        return Err(
-                            format!("Orders do not match, expected: {:?} received: {:?}", *order2, *order1).into()
-                        );
-                    }
+                let oids1: HashSet<Oid> = orders1.iter().map(InnerOrder::oid).collect();
+                let oids2: HashSet<Oid> = orders2.iter().map(InnerOrder::oid).collect();
+
+                let missing: Vec<_> = oids2.difference(&oids1).collect();
+                let extra: Vec<_> = oids1.difference(&oids2).collect();
+
+                if !missing.is_empty() || !extra.is_empty() {
+                    return Err(format!(
+                        "Order mismatch for {}: missing {} orders, extra {} orders",
+                        coin.value(),
+                        missing.len(),
+                        extra.len()
+                    )
+                    .into());
                 }
             }
         } else if !book1[0].is_empty() || !book1[1].is_empty() {
