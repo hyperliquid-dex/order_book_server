@@ -39,6 +39,9 @@ use crate::{
 mod state;
 mod utils;
 
+type OrderBatchPair = (Arc<Batch<NodeDataOrderStatus>>, Arc<Batch<NodeDataOrderDiff>>);
+type PendingOrderUpdates = VecDeque<OrderBatchPair>;
+
 #[derive(Debug)]
 pub(crate) struct ParseResult {
     pub batches: Vec<EventBatch>,
@@ -108,10 +111,7 @@ fn spawn_event_processor(
             } else {
                 let mut guard = listener.lock().await;
                 let is_reading = guard.is_reading(event_source);
-                if !is_reading {
-                    // Not tracking a file yet - start tracking from end of file
-                    guard.start_tracking_file(new_path, event_source)
-                } else {
+                if is_reading {
                     let data = guard.read_pending_data(event_source);
                     let current_height = guard.current_height();
                     drop(guard);
@@ -135,6 +135,9 @@ fn spawn_event_processor(
                         Ok(None) => Ok(()),
                         Err(err) => Err(err),
                     }
+                } else {
+                    // Not tracking a file yet - start tracking from end of file
+                    guard.start_tracking_file(new_path, event_source)
                 }
             };
 
@@ -329,7 +332,7 @@ pub(crate) struct OrderBookListener {
     order_diff_cache: BatchQueue<NodeDataOrderDiff>,
     order_status_cache: BatchQueue<NodeDataOrderStatus>,
     // Only Some when we want it to collect updates
-    fetched_snapshot_cache: Option<VecDeque<(Arc<Batch<NodeDataOrderStatus>>, Arc<Batch<NodeDataOrderDiff>>)>>,
+    fetched_snapshot_cache: Option<PendingOrderUpdates>,
     internal_message_tx: Option<Sender<Arc<InternalMessage>>>,
 }
 
@@ -441,7 +444,7 @@ impl OrderBookListener {
     }
 
     // take the cached updates and stop collecting updates
-    fn take_cache(&mut self) -> VecDeque<(Arc<Batch<NodeDataOrderStatus>>, Arc<Batch<NodeDataOrderDiff>>)> {
+    fn take_cache(&mut self) -> PendingOrderUpdates {
         self.fetched_snapshot_cache.take().unwrap_or_default()
     }
 
