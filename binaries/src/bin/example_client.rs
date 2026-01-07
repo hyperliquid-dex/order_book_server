@@ -1,4 +1,5 @@
 #![allow(unused_crate_dependencies)]
+use chrono::Utc;
 use clap::{Parser, ValueEnum};
 use futures_util::{SinkExt, StreamExt};
 use server::Result;
@@ -54,8 +55,15 @@ async fn main() -> Result<()> {
 
     let mut msg_cnt = 0;
     while let Some(msg) = read.next().await {
+        let now_ms = Utc::now().timestamp_millis();
         match msg {
-            Ok(Message::Text(txt)) => println!("Received text {msg_cnt}: {txt}"),
+            Ok(Message::Text(txt)) => {
+                if let Some(latency) = extract_latency(&txt, now_ms) {
+                    println!("Received {msg_cnt} [latency: {latency}ms]: {txt}");
+                } else {
+                    println!("Received {msg_cnt}: {txt}");
+                }
+            }
             Ok(Message::Binary(bin)) => println!("Received binary: {bin:?}"),
             Ok(Message::Ping(_)) => println!("Received ping"),
             Ok(Message::Pong(_)) => println!("Received pong"),
@@ -74,4 +82,22 @@ async fn main() -> Result<()> {
 
     println!("Connection closed");
     Ok(())
+}
+
+fn extract_latency(json_str: &str, now_ms: i64) -> Option<i64> {
+    let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
+
+    if let Some(time) = parsed.get("data").and_then(|d| d.get("time")).and_then(|t| t.as_i64()) {
+        return Some(now_ms - time);
+    }
+
+    if let Some(data) = parsed.get("data").and_then(|d| d.as_array()) {
+        if let Some(first) = data.first() {
+            if let Some(time) = first.get("time").and_then(|t| t.as_i64()) {
+                return Some(now_ms - time);
+            }
+        }
+    }
+
+    None
 }

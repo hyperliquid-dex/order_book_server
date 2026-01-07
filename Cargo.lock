@@ -974,9 +974,11 @@ checksum = "55248b47b0caf0546f7988906588779981c43bb1bc9d0c44087278f80cdb44ba"
 name = "binaries"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "clap",
  "env_logger",
  "futures-util",
+ "serde_json",
  "server",
  "tokio",
  "tokio-tungstenite",
