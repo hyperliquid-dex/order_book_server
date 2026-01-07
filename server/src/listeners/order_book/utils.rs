@@ -128,7 +128,8 @@ pub(super) fn compute_l2_snapshots<O: InnerOrder + Send + Sync>(order_books: &Or
     )
 }
 
-pub(super) enum EventBatch {
+#[derive(Debug, Clone)]
+pub(crate) enum EventBatch {
     Orders(Batch<NodeDataOrderStatus>),
     BookDiffs(Batch<NodeDataOrderDiff>),
     Fills(Batch<NodeDataFill>),
@@ -145,10 +146,10 @@ impl<T> BatchQueue<T> {
     }
 
     pub(super) fn push(&mut self, block: Batch<T>) -> bool {
-        if let Some(last_ts) = self.last_ts {
-            if last_ts >= block.block_number() {
-                return false;
-            }
+        if let Some(last_ts) = self.last_ts
+            && last_ts >= block.block_number()
+        {
+            return false;
         }
         self.last_ts = Some(block.block_number());
         self.deque.push_back(block);

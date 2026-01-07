@@ -51,10 +51,10 @@ impl Subscription {
                         info!("Invalid subscription: sig figs aren't set correctly");
                         return false;
                     }
-                    if let Some(m) = *mantissa {
-                        if n_sig_figs < 5 || (m != 5 && m != 2) {
-                            return false;
-                        }
+                    if let Some(m) = *mantissa
+                        && (n_sig_figs < 5 || (m != 5 && m != 2))
+                    {
+                        return false;
                     }
                 } else if mantissa.is_some() {
                     info!("Invalid subscription: mantissa can not be some if sig figs are not set");

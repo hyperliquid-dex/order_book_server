@@ -61,7 +61,7 @@ pub async fn run_websocket_server(
         "/ws",
         get({
             let internal_message_tx = internal_message_tx.clone();
-            async move |ws_upgrade| {
+            move |ws_upgrade| async move {
                 ws_handler(ws_upgrade, internal_message_tx.clone(), listener.clone(), ignore_spot, websocket_opts)
             }
         }),
@@ -85,7 +85,13 @@ fn ws_handler(
     ignore_spot: bool,
     websocket_opts: yawc::Options,
 ) -> impl IntoResponse {
-    let (resp, fut) = incoming.upgrade(websocket_opts).unwrap();
+    let (resp, fut) = match incoming.upgrade(websocket_opts) {
+        Ok(v) => v,
+        Err(err) => {
+            log::error!("failed to upgrade websocket connection: {err}");
+            return axum::http::StatusCode::BAD_REQUEST.into_response();
+        }
+    };
     tokio::spawn(async move {
         let ws = match fut.await {
             Ok(ok) => ok,
@@ -95,10 +101,10 @@ fn ws_handler(
             }
         };
 
-        handle_socket(ws, internal_message_tx, listener, ignore_spot).await
+        handle_socket(ws, internal_message_tx, listener, ignore_spot).await;
     });
 
-    resp
+    resp.into_response()
 }
 
 async fn handle_socket(
@@ -287,15 +293,15 @@ fn coin_to_trades(batch: &Batch<NodeDataFill>) -> HashMap<String, Vec<Trade>> {
     while fills.len() >= 2 {
         let f2 = fills.pop();
         let f1 = fills.pop();
-        if let Some(f1) = f1 {
-            if let Some(f2) = f2 {
-                let mut fills = HashMap::new();
-                fills.insert(f1.1.side, f1);
-                fills.insert(f2.1.side, f2);
-                let trade = Trade::from_fills(fills);
-                let coin = trade.coin.clone();
-                trades.entry(coin).or_insert_with(Vec::new).push(trade);
-            }
+        if let Some(f1) = f1
+            && let Some(f2) = f2
+        {
+            let mut fills = HashMap::new();
+            fills.insert(f1.1.side, f1);
+            fills.insert(f2.1.side, f2);
+            let trade = Trade::from_fills(fills);
+            let coin = trade.coin.clone();
+            trades.entry(coin).or_insert_with(Vec::new).push(trade);
         }
     }
     for list in trades.values_mut() {
@@ -329,11 +335,11 @@ async fn send_ws_data_from_book_updates(
     subscription: &Subscription,
     book_updates: &mut HashMap<String, L4BookUpdates>,
 ) {
-    if let Subscription::L4Book { coin } = subscription {
-        if let Some(updates) = book_updates.remove(coin) {
-            let msg = ServerResponse::L4Book(L4Book::Updates(updates));
-            send_socket_message(socket, msg).await;
-        }
+    if let Subscription::L4Book { coin } = subscription
+        && let Some(updates) = book_updates.remove(coin)
+    {
+        let msg = ServerResponse::L4Book(L4Book::Updates(updates));
+        send_socket_message(socket, msg).await;
     }
 }
 
@@ -342,11 +348,11 @@ async fn send_ws_data_from_trades(
     subscription: &Subscription,
     trades: &mut HashMap<String, Vec<Trade>>,
 ) {
-    if let Subscription::Trades { coin } = subscription {
-        if let Some(trades) = trades.remove(coin) {
-            let msg = ServerResponse::Trades(trades);
-            send_socket_message(socket, msg).await;
-        }
+    if let Subscription::Trades { coin } = subscription
+        && let Some(trades) = trades.remove(coin)
+    {
+        let msg = ServerResponse::Trades(trades);
+        send_socket_message(socket, msg).await;
     }
 }
 

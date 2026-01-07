@@ -39,8 +39,61 @@ use crate::{
 mod state;
 mod utils;
 
+#[derive(Debug)]
+pub(crate) struct ParseResult {
+    pub batches: Vec<EventBatch>,
+    pub failed_at_byte: Option<usize>,
+}
+
+pub(crate) fn parse_event_data(data: &str, event_source: EventSource, current_height: Option<u64>) -> ParseResult {
+    let mut batches = Vec::new();
+    let mut bytes_processed = 0;
+
+    for line in data.lines() {
+        if line.is_empty() {
+            bytes_processed += 1;
+            continue;
+        }
+
+        let res = match event_source {
+            EventSource::Fills => serde_json::from_str::<Batch<NodeDataFill>>(line).map(EventBatch::Fills),
+            EventSource::OrderStatuses => {
+                serde_json::from_str::<Batch<NodeDataOrderStatus>>(line).map(EventBatch::Orders)
+            }
+            EventSource::OrderDiffs => {
+                serde_json::from_str::<Batch<NodeDataOrderDiff>>(line).map(EventBatch::BookDiffs)
+            }
+        };
+
+        match res {
+            Ok(batch) => {
+                let height = match &batch {
+                    EventBatch::Fills(b) => b.block_number(),
+                    EventBatch::Orders(b) => b.block_number(),
+                    EventBatch::BookDiffs(b) => b.block_number(),
+                };
+                if height % 100 == 0 {
+                    info!("{event_source} block: {height}");
+                }
+                batches.push(batch);
+                bytes_processed += line.len() + 1;
+            }
+            Err(err) => {
+                error!(
+                    "{event_source} serialization error {err}, height: {current_height:?}, line: {:?}",
+                    &line[..line.len().min(100)],
+                );
+                return ParseResult { batches, failed_at_byte: Some(data.len() - bytes_processed) };
+            }
+        }
+    }
+
+    ParseResult { batches, failed_at_byte: None }
+}
+
 // WARNING - this code assumes no other file system operations are occurring in the watched directories
 // if there are scripts running, this may not work as intended
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn hl_listen(
     listener: Arc<Mutex<OrderBookListener>>,
     dir: PathBuf,
@@ -83,12 +136,8 @@ pub(crate) async fn hl_listen(
                 Some(Ok(event)) => {
                     if event.kind.is_create() || event.kind.is_modify() {
                         let new_path = &event.paths[0];
-                        if new_path.starts_with(&order_statuses_dir) && new_path.is_file() {
-                            listener
-                                .lock()
-                                .await
-                                .process_update(&event, new_path, EventSource::OrderStatuses)
-                                .map_err(|err| format!("Order status processing error: {err}"))?;
+                        let event_source = if new_path.starts_with(&order_statuses_dir) && new_path.is_file() {
+                            Some(EventSource::OrderStatuses)
                         } else if new_path.starts_with(&fills_dir) && new_path.is_file() {
                             let now = Instant::now();
                             if let Some(last) = last_fills_event {
@@ -96,17 +145,45 @@ pub(crate) async fn hl_listen(
                                 info!("Fills file event delta: {delta_ms:?}");
                             }
                             last_fills_event = Some(now);
-                            listener
-                                .lock()
-                                .await
-                                .process_update(&event, new_path, EventSource::Fills)
-                                .map_err(|err| format!("Fill update processing error: {err}"))?;
+                            Some(EventSource::Fills)
                         } else if new_path.starts_with(&order_diffs_dir) && new_path.is_file() {
-                            listener
-                                .lock()
-                                .await
-                                .process_update(&event, new_path, EventSource::OrderDiffs)
-                                .map_err(|err| format!("Book diff processing error: {err}"))?;
+                            Some(EventSource::OrderDiffs)
+                        } else {
+                            None
+                        };
+
+                        if let Some(event_source) = event_source {
+                            if event.kind.is_create() {
+                                listener
+                                    .lock()
+                                    .await
+                                    .process_update(&event, new_path, event_source)
+                                    .map_err(|err| format!("{event_source} processing error: {err}"))?;
+                            } else {
+                                let (data, current_height) = {
+                                    let mut guard = listener.lock().await;
+                                    let data = guard
+                                        .read_pending_data(event_source)
+                                        .map_err(|err| format!("{event_source} read error: {err}"))?;
+                                    let height = guard.current_height();
+                                    drop(guard);
+                                    (data, height)
+                                };
+
+                                if let Some(data) = data {
+                                    let parse_result = parse_event_data(&data, event_source, current_height);
+
+                                    let mut guard = listener.lock().await;
+                                    if !parse_result.batches.is_empty() {
+                                        guard.apply_batches(parse_result.batches)
+                                            .map_err(|err| format!("{event_source} apply error: {err}"))?;
+                                    }
+                                    if let Some(seek_bytes) = parse_result.failed_at_byte {
+                                        #[allow(clippy::cast_possible_wrap)]
+                                        guard.seek_back(event_source, seek_bytes as i64);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -292,25 +369,25 @@ impl OrderBookListener {
                 }
             }
         }
-        if self.is_ready() {
-            if let Some((order_statuses, order_diffs)) = self.pop_cache() {
-                self.order_book_state
-                    .as_mut()
-                    .map(|book| book.apply_updates(order_statuses.clone(), order_diffs.clone()))
-                    .transpose()?;
-                if let Some(cache) = &mut self.fetched_snapshot_cache {
-                    cache.push_back((order_statuses.clone(), order_diffs.clone()));
-                }
-                if let Some(tx) = &self.internal_message_tx {
-                    let tx = tx.clone();
-                    tokio::spawn(async move {
-                        let updates = Arc::new(InternalMessage::L4BookUpdates {
-                            diff_batch: order_diffs,
-                            status_batch: order_statuses,
-                        });
-                        let _unused = tx.send(updates);
+        if self.is_ready()
+            && let Some((order_statuses, order_diffs)) = self.pop_cache()
+        {
+            self.order_book_state
+                .as_mut()
+                .map(|book| book.apply_updates(order_statuses.clone(), order_diffs.clone()))
+                .transpose()?;
+            if let Some(cache) = &mut self.fetched_snapshot_cache {
+                cache.push_back((order_statuses.clone(), order_diffs.clone()));
+            }
+            if let Some(tx) = &self.internal_message_tx {
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let updates = Arc::new(InternalMessage::L4BookUpdates {
+                        diff_batch: order_diffs,
+                        status_batch: order_statuses,
                     });
-                }
+                    let _unused = tx.send(updates);
+                });
             }
         }
         Ok(())
@@ -377,6 +454,45 @@ impl OrderBookListener {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn read_pending_data(&mut self, event_source: EventSource) -> Result<Option<String>> {
+        if !self.is_reading(event_source) {
+            return Ok(None);
+        }
+        let mut buf = String::new();
+        let file = self.file_mut(event_source).as_mut().ok_or("No file being tracked")?;
+        file.read_to_string(&mut buf)?;
+        if buf.is_empty() { Ok(None) } else { Ok(Some(buf)) }
+    }
+
+    pub(crate) fn seek_back(&mut self, event_source: EventSource, bytes: i64) {
+        if let Some(file) = self.file_mut(event_source).as_mut() {
+            drop(file.seek_relative(-bytes));
+        }
+    }
+
+    pub(crate) fn apply_batches(&mut self, batches: Vec<EventBatch>) -> Result<()> {
+        for batch in batches {
+            if let Err(err) = self.receive_batch(batch) {
+                self.order_book_state = None;
+                return Err(err);
+            }
+        }
+        if let Some(snapshot) = self.l2_snapshots(true)
+            && let Some(tx) = &self.internal_message_tx
+        {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let snapshot = Arc::new(InternalMessage::Snapshot { l2_snapshots: snapshot.1, time: snapshot.0 });
+                let _unused = tx.send(snapshot);
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn current_height(&self) -> Option<u64> {
+        self.order_book_state.as_ref().map(OrderBookState::height)
     }
 }
 
@@ -450,14 +566,14 @@ impl DirectoryListener for OrderBookListener {
             }
         }
         let snapshot = self.l2_snapshots(true);
-        if let Some(snapshot) = snapshot {
-            if let Some(tx) = &self.internal_message_tx {
-                let tx = tx.clone();
-                tokio::spawn(async move {
-                    let snapshot = Arc::new(InternalMessage::Snapshot { l2_snapshots: snapshot.1, time: snapshot.0 });
-                    let _unused = tx.send(snapshot);
-                });
-            }
+        if let Some(snapshot) = snapshot
+            && let Some(tx) = &self.internal_message_tx
+        {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let snapshot = Arc::new(InternalMessage::Snapshot { l2_snapshots: snapshot.1, time: snapshot.0 });
+                let _unused = tx.send(snapshot);
+            });
         }
         Ok(())
     }
