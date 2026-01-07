@@ -108,8 +108,8 @@ impl OrderBookState {
                         inner_order.convert_trigger(time.try_into().unwrap());
                         self.order_book.add_order(inner_order);
                     } else if coin.is_spot() {
-                        // Spot order status data can be inconsistent (e.g., Assistance Fund orders)
-                        debug!("Missing order status for spot order, skipping: {diff:?}");
+                        // Spot orders from Assistance Fund (0xfefe...fefe) don't have order statuses
+                        debug!("Missing order status for spot order (likely Assistance Fund), skipping: {diff:?}");
                     } else {
                         return Err(format!("Unable to find order opening status {diff:?}").into());
                     }
@@ -118,7 +118,8 @@ impl OrderBookState {
                     let is_spot = coin.is_spot();
                     if !self.order_book.modify_sz(oid, coin, new_sz) {
                         if is_spot {
-                            debug!("Missing spot order for update, skipping: {diff:?}");
+                            // Assistance Fund orders were never added, so update will fail
+                            debug!("Missing spot order for update (likely Assistance Fund), skipping: {diff:?}");
                         } else {
                             return Err(format!("Unable to find order on the book {diff:?}").into());
                         }
@@ -128,7 +129,8 @@ impl OrderBookState {
                     let is_spot = coin.is_spot();
                     if !self.order_book.cancel_order(oid, coin) {
                         if is_spot {
-                            debug!("Missing spot order for remove, skipping: {diff:?}");
+                            // Assistance Fund orders were never added, so remove will fail
+                            debug!("Missing spot order for remove (likely Assistance Fund), skipping: {diff:?}");
                         } else {
                             return Err(format!("Unable to find order on the book {diff:?}").into());
                         }

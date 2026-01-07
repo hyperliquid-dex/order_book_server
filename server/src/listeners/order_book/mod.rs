@@ -214,7 +214,7 @@ pub(crate) async fn hl_listen(
                             let now = Instant::now();
                             if let Some(last) = last_fills_event {
                                 let delta_ms = now.duration_since(last);
-                                info!("Fills file event delta: {delta_ms:?}");
+                                debug!("Fills file event delta: {delta_ms:?}");
                             }
                             last_fills_event = Some(now);
                             drop(fills_tx.send(event));
@@ -482,7 +482,7 @@ impl OrderBookListener {
 
         if !retry {
             self.order_book_state = Some(new_order_book);
-            info!("Order book ready at height {}", height);
+            info!("Order book ready at height {height}");
         }
     }
 

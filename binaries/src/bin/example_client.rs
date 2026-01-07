@@ -21,8 +21,7 @@ impl FromStr for Coin {
         let s = s.trim();
 
         // Spot token: @{digits}
-        if s.starts_with('@') {
-            let rest = &s[1..];
+        if let Some(rest) = s.strip_prefix('@') {
             if rest.is_empty() {
                 return Err("Spot token index cannot be empty (e.g., @107)".to_string());
             }
@@ -66,15 +65,24 @@ enum Subscription {
 /// # Examples
 ///
 /// Subscribe to BTC perpetual trades:
+/// ```bash
 ///   example_client --address 127.0.0.1 --port 8000 --subscription trades --coin BTC
+/// ```
 ///
 /// Subscribe to HYPE spot trades (token index @107):
+/// ```bash
 ///   example_client --address 127.0.0.1 --port 8000 --subscription trades --coin @107
-///
+/// ```
 /// To find spot token indices, query the Hyperliquid API:
+/// ```bash
 ///   curl -X POST https://api.hyperliquid.xyz/info -H "Content-Type: application/json" \
 ///        -d '{"type": "spotMeta"}' | jq '.universe[] | select(.tokens[0] == 150)'
-///   # Returns: {"tokens":[150,0],"name":"@107",...} -> HYPE spot is @107
+/// ```
+///   ### Returns:
+/// ```json
+/// {"tokens":[150,0],"name":"@107",...}
+/// ```
+/// HYPE spot is @107
 struct Args {
     /// WebSocket server address (e.g., 127.0.0.1)
     #[arg(long)]

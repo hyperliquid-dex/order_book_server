@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use log::debug;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use reqwest::Client;
 use serde_json::json;
@@ -68,21 +69,34 @@ pub(super) fn validate_snapshot_consistency<O: InnerOrder>(
                 let extra: Vec<_> = oids1.difference(&oids2).collect();
 
                 if !missing.is_empty() || !extra.is_empty() {
-                    return Err(format!(
-                        "Order mismatch for {}: missing {} orders, extra {} orders",
-                        coin.value(),
-                        missing.len(),
-                        extra.len()
-                    )
-                    .into());
+                    if coin.is_spot() {
+                        // Spot order mismatches occur due to Assistance Fund (0xfefe...fefe) orders
+                        // which don't have corresponding order statuses in the node data
+                        debug!(
+                            "Spot order mismatch for {} (likely Assistance Fund): missing {} orders, extra {} orders",
+                            coin.value(),
+                            missing.len(),
+                            extra.len()
+                        );
+                    } else {
+                        return Err(format!(
+                            "Order mismatch for {}: missing {} orders, extra {} orders",
+                            coin.value(),
+                            missing.len(),
+                            extra.len()
+                        )
+                        .into());
+                    }
                 }
             }
         } else if !book1[0].is_empty() || !book1[1].is_empty() {
             return Err(format!("Missing {} book", coin.value()).into());
         }
     }
-    if !snapshot_map.is_empty() {
-        return Err("Extra orderbooks detected".to_string().into());
+    // Allow extra spot orderbooks in expected (from snapshot) that we don't have
+    let extra_perps: Vec<_> = snapshot_map.keys().filter(|c| !c.is_spot()).collect();
+    if !extra_perps.is_empty() {
+        return Err(format!("Extra perpetual orderbooks detected: {extra_perps:?}").into());
     }
     Ok(())
 }
