@@ -1,6 +1,8 @@
-use crate::prelude::*;
-use slab::Slab;
 use std::{collections::HashMap, hash::Hash, marker::PhantomData};
+
+use slab::Slab;
+
+use crate::prelude::*;
 
 #[derive(Clone)]
 struct Node<K, T> {
@@ -145,9 +147,11 @@ impl<K: Clone + Eq + Hash, T: Clone> LinkedList<K, T> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use itertools::Itertools;
     use std::collections::VecDeque;
+
+    use itertools::Itertools;
+
+    use super::*;
 
     #[must_use]
     fn to_rev_vec<K: Clone + Eq + Hash, T: Clone>(list: &LinkedList<K, T>) -> Vec<&T> {

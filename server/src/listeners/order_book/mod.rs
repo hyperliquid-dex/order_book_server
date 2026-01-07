@@ -1,3 +1,26 @@
+use std::{
+    cmp::Ordering,
+    collections::{HashMap, HashSet, VecDeque},
+    io::{Read, Seek, SeekFrom},
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
+
+use alloy::primitives::Address;
+use fs::File;
+use log::{error, info};
+use notify::{Event, RecursiveMode, Watcher, recommended_watcher};
+use tokio::{
+    sync::{
+        Mutex,
+        broadcast::Sender,
+        mpsc::{UnboundedSender, unbounded_channel},
+    },
+    time::{Instant, interval_at, sleep},
+};
+use utils::{BatchQueue, EventBatch, process_rmp_file, validate_snapshot_consistency};
+
 use crate::{
     HL_NODE,
     listeners::{directory::DirectoryListener, order_book::state::OrderBookState},
@@ -12,34 +35,17 @@ use crate::{
         node_data::{Batch, EventSource, NodeDataFill, NodeDataOrderDiff, NodeDataOrderStatus},
     },
 };
-use alloy::primitives::Address;
-use fs::File;
-use log::{error, info};
-use notify::{Event, RecursiveMode, Watcher, recommended_watcher};
-use std::{
-    cmp::Ordering,
-    collections::{HashMap, HashSet, VecDeque},
-    io::{Read, Seek, SeekFrom},
-    path::PathBuf,
-    sync::Arc,
-    time::Duration,
-};
-use tokio::{
-    sync::{
-        Mutex,
-        broadcast::Sender,
-        mpsc::{UnboundedSender, unbounded_channel},
-    },
-    time::{Instant, interval_at, sleep},
-};
-use utils::{BatchQueue, EventBatch, process_rmp_file, validate_snapshot_consistency};
 
 mod state;
 mod utils;
 
 // WARNING - this code assumes no other file system operations are occurring in the watched directories
 // if there are scripts running, this may not work as intended
-pub(crate) async fn hl_listen(listener: Arc<Mutex<OrderBookListener>>, dir: PathBuf) -> Result<()> {
+pub(crate) async fn hl_listen(
+    listener: Arc<Mutex<OrderBookListener>>,
+    dir: PathBuf,
+    container_dir: PathBuf,
+) -> Result<()> {
     let order_statuses_dir = EventSource::OrderStatuses.event_source_dir(&dir).canonicalize()?;
     let fills_dir = EventSource::Fills.event_source_dir(&dir).canonicalize()?;
     let order_diffs_dir = EventSource::OrderDiffs.event_source_dir(&dir).canonicalize()?;
@@ -120,7 +126,7 @@ pub(crate) async fn hl_listen(listener: Arc<Mutex<OrderBookListener>>, dir: Path
             _ = ticker.tick() => {
                 let listener = listener.clone();
                 let snapshot_fetch_task_tx = snapshot_fetch_task_tx.clone();
-                fetch_snapshot(dir.clone(), listener, snapshot_fetch_task_tx, ignore_spot);
+                fetch_snapshot(dir.clone(), container_dir.clone(), listener, snapshot_fetch_task_tx, ignore_spot);
             }
             () = sleep(Duration::from_secs(5)) => {
                 let listener = listener.lock().await;
@@ -134,13 +140,14 @@ pub(crate) async fn hl_listen(listener: Arc<Mutex<OrderBookListener>>, dir: Path
 
 fn fetch_snapshot(
     dir: PathBuf,
+    container_dir: PathBuf,
     listener: Arc<Mutex<OrderBookListener>>,
     tx: UnboundedSender<Result<()>>,
     ignore_spot: bool,
 ) {
     let tx = tx.clone();
     tokio::spawn(async move {
-        let res = match process_rmp_file(&dir).await {
+        let res = match process_rmp_file(&dir, &container_dir).await {
             Ok(output_fln) => {
                 let state = {
                     let mut listener = listener.lock().await;

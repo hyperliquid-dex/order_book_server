@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet, VecDeque};
+
 use crate::{
     listeners::order_book::{L2Snapshots, TimedSnapshots, utils::compute_l2_snapshots},
     order_book::{
@@ -10,7 +12,6 @@ use crate::{
         node_data::{Batch, NodeDataOrderDiff, NodeDataOrderStatus},
     },
 };
-use std::collections::{HashMap, HashSet, VecDeque};
 
 #[derive(Clone)]
 pub(super) struct OrderBookState {

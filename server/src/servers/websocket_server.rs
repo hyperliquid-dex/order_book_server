@@ -1,3 +1,22 @@
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    sync::Arc,
+};
+
+use axum::{Router, response::IntoResponse, routing::get};
+use futures_util::{SinkExt, StreamExt};
+use log::{error, info};
+use tokio::{
+    net::TcpListener,
+    select,
+    sync::{
+        Mutex,
+        broadcast::{Sender, channel},
+    },
+};
+use yawc::{FrameView, OpCode, WebSocket};
+
 use crate::{
     listeners::order_book::{
         InternalMessage, L2SnapshotParams, L2Snapshots, OrderBookListener, TimedSnapshots, hl_listen,
@@ -11,29 +30,16 @@ use crate::{
         subscription::{ClientMessage, DEFAULT_LEVELS, ServerResponse, Subscription, SubscriptionManager},
     },
 };
-use axum::{Router, response::IntoResponse, routing::get};
-use futures_util::{SinkExt, StreamExt};
-use log::{error, info};
-use std::{
-    collections::{HashMap, HashSet},
-    env::home_dir,
-    sync::Arc,
-};
-use tokio::select;
-use tokio::{
-    net::TcpListener,
-    sync::{
-        Mutex,
-        broadcast::{Sender, channel},
-    },
-};
-use yawc::{FrameView, OpCode, WebSocket};
 
-pub async fn run_websocket_server(address: &str, ignore_spot: bool, compression_level: u32) -> Result<()> {
+pub async fn run_websocket_server(
+    address: &str,
+    ignore_spot: bool,
+    compression_level: u32,
+    data_dir: PathBuf,
+    container_data_dir: PathBuf,
+) -> Result<()> {
     let (internal_message_tx, _) = channel::<Arc<InternalMessage>>(100);
 
-    // Central task: listen to messages and forward them for distribution
-    let home_dir = home_dir().ok_or("Could not find home directory")?;
     let listener = {
         let internal_message_tx = internal_message_tx.clone();
         OrderBookListener::new(Some(internal_message_tx), ignore_spot)
@@ -42,7 +48,7 @@ pub async fn run_websocket_server(address: &str, ignore_spot: bool, compression_
     {
         let listener = listener.clone();
         tokio::spawn(async move {
-            if let Err(err) = hl_listen(listener, home_dir).await {
+            if let Err(err) = hl_listen(listener, data_dir, container_data_dir).await {
                 error!("Listener fatal error: {err}");
                 std::process::exit(1);
             }

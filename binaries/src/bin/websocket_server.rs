@@ -1,5 +1,5 @@
 #![allow(unused_crate_dependencies)]
-use std::net::Ipv4Addr;
+use std::{env::home_dir, net::Ipv4Addr, path::PathBuf};
 
 use clap::Parser;
 use server::{Result, run_websocket_server};
@@ -25,6 +25,17 @@ struct Args {
     /// documentation for <https://docs.rs/flate2/1.1.2/flate2/struct.Compression.html#method.new> for more info.
     #[arg(long)]
     websocket_compression_level: Option<u32>,
+
+    /// Base directory containing hl/data/ subdirectories (host path).
+    /// Defaults to the user's home directory.
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+
+    /// Container's equivalent of data_dir, used for API requests when the HL node
+    /// runs in a container. If not specified, defaults to data_dir.
+    /// Example: --data-dir /data --container-data-dir /home/hluser
+    #[arg(long)]
+    container_data_dir: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -37,7 +48,9 @@ async fn main() -> Result<()> {
     println!("Running websocket server on {full_address}");
 
     let compression_level = args.websocket_compression_level.unwrap_or(/* Some compression */ 1);
-    run_websocket_server(&full_address, true, compression_level).await?;
+    let data_dir = args.data_dir.or_else(home_dir).ok_or("Could not determine data directory")?;
+    let container_data_dir = args.container_data_dir.unwrap_or_else(|| data_dir.clone());
+    run_websocket_server(&full_address, true, compression_level, data_dir, container_data_dir).await?;
 
     Ok(())
 }

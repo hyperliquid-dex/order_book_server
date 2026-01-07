@@ -1,7 +1,9 @@
-use crate::prelude::*;
+use std::collections::{BTreeMap, HashMap, HashSet};
+
 use itertools::Itertools;
 use linked_list::LinkedList;
-use std::collections::{BTreeMap, HashMap, HashSet};
+
+use crate::prelude::*;
 
 pub(crate) mod levels;
 mod linked_list;
@@ -181,10 +183,10 @@ fn match_order<O: InnerOrder>(maker_orders: &mut BTreeMap<Px, LinkedList<Oid, O>
 
 #[cfg(test)]
 mod tests {
-    use crate::order_book::types::{Coin, Sz};
+    use std::collections::BTreeSet;
 
     use super::*;
-    use std::collections::BTreeSet;
+    use crate::order_book::types::{Coin, Sz};
 
     #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
     struct MinimalOrder {

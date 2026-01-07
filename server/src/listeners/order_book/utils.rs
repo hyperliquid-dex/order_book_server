@@ -1,3 +1,12 @@
+use std::{
+    collections::{HashMap, VecDeque},
+    path::{Path, PathBuf},
+};
+
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use reqwest::Client;
+use serde_json::json;
+
 use crate::{
     listeners::order_book::{L2SnapshotParams, L2Snapshots},
     order_book::{
@@ -11,17 +20,10 @@ use crate::{
         node_data::{Batch, NodeDataFill, NodeDataOrderDiff, NodeDataOrderStatus},
     },
 };
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use reqwest::Client;
-use serde_json::json;
-use std::collections::VecDeque;
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-};
 
-pub(super) async fn process_rmp_file(dir: &Path) -> Result<PathBuf> {
-    let output_path = dir.join("out.json");
+pub(super) async fn process_rmp_file(host_dir: &Path, container_dir: &Path) -> Result<PathBuf> {
+    let host_output_path = host_dir.join("hl/data/out.json");
+    let container_output_path = container_dir.join("hl/data/out.json");
     let payload = json!({
         "type": "fileSnapshot",
         "request": {
@@ -29,7 +31,7 @@ pub(super) async fn process_rmp_file(dir: &Path) -> Result<PathBuf> {
             "includeUsers": true,
             "includeTriggerOrders": false
         },
-        "outPath": output_path,
+        "outPath": container_output_path,
         "includeHeightInOutput": true
     });
 
@@ -41,7 +43,7 @@ pub(super) async fn process_rmp_file(dir: &Path) -> Result<PathBuf> {
         .send()
         .await?
         .error_for_status()?;
-    Ok(output_path)
+    Ok(host_output_path)
 }
 
 pub(super) fn validate_snapshot_consistency<O: Clone + PartialEq + Debug>(
