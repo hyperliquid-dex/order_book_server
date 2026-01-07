@@ -42,6 +42,11 @@ struct Args {
     /// Defaults to 30 seconds.
     #[arg(long, default_value = "30s", value_parser = parse_duration)]
     snapshot_interval_secs: Duration,
+
+    /// Exclude spot order books (tokens with @index format like @107).
+    /// By default spot is included.
+    #[arg(long, default_value_t = false)]
+    exclude_spot: bool,
 }
 
 #[tokio::main]
@@ -58,7 +63,7 @@ async fn main() -> Result<()> {
     let container_data_dir = args.container_data_dir.unwrap_or_else(|| data_dir.clone());
     run_websocket_server(
         &full_address,
-        true,
+        args.exclude_spot,
         compression_level,
         data_dir,
         container_data_dir,
