@@ -90,14 +90,14 @@ fn extract_latency(json_str: &str, now_ms: i64) -> Option<Duration> {
     let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
 
     if let Some(time) = parsed.get("data").and_then(|d| d.get("time")).and_then(serde_json::Value::as_i64) {
-        return Some(Duration::from_millis((now_ms - time) as u64));
+        return Some(Duration::from_millis((now_ms - time).cast_unsigned()));
     }
 
     if let Some(data) = parsed.get("data").and_then(|d| d.as_array())
         && let Some(first) = data.first()
         && let Some(time) = first.get("time").and_then(serde_json::Value::as_i64)
     {
-        return Some(Duration::from_millis((now_ms - time) as u64));
+        return Some(Duration::from_millis((now_ms - time).cast_unsigned()));
     }
 
     None
