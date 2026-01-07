@@ -55,13 +55,15 @@ pub(crate) fn parse_event_data(data: &str, event_source: EventSource, current_he
             continue;
         }
 
+        // simd-json requires mutable bytes for SIMD-accelerated parsing
+        let mut line_bytes = line.as_bytes().to_vec();
         let res = match event_source {
-            EventSource::Fills => serde_json::from_str::<Batch<NodeDataFill>>(line).map(EventBatch::Fills),
+            EventSource::Fills => simd_json::from_slice::<Batch<NodeDataFill>>(&mut line_bytes).map(EventBatch::Fills),
             EventSource::OrderStatuses => {
-                serde_json::from_str::<Batch<NodeDataOrderStatus>>(line).map(EventBatch::Orders)
+                simd_json::from_slice::<Batch<NodeDataOrderStatus>>(&mut line_bytes).map(EventBatch::Orders)
             }
             EventSource::OrderDiffs => {
-                serde_json::from_str::<Batch<NodeDataOrderDiff>>(line).map(EventBatch::BookDiffs)
+                simd_json::from_slice::<Batch<NodeDataOrderDiff>>(&mut line_bytes).map(EventBatch::BookDiffs)
             }
         };
 
@@ -570,15 +572,17 @@ impl DirectoryListener for OrderBookListener {
             if line.is_empty() {
                 continue;
             }
+            // simd-json requires mutable bytes for SIMD-accelerated parsing
+            let mut line_bytes = line.as_bytes().to_vec();
             let res = match event_source {
-                EventSource::Fills => serde_json::from_str::<Batch<NodeDataFill>>(line).map(|batch| {
+                EventSource::Fills => simd_json::from_slice::<Batch<NodeDataFill>>(&mut line_bytes).map(|batch| {
                     let height = batch.block_number();
                     (height, EventBatch::Fills(batch))
                 }),
-                EventSource::OrderStatuses => serde_json::from_str(line)
-                    .map(|batch: Batch<NodeDataOrderStatus>| (batch.block_number(), EventBatch::Orders(batch))),
-                EventSource::OrderDiffs => serde_json::from_str(line)
-                    .map(|batch: Batch<NodeDataOrderDiff>| (batch.block_number(), EventBatch::BookDiffs(batch))),
+                EventSource::OrderStatuses => simd_json::from_slice::<Batch<NodeDataOrderStatus>>(&mut line_bytes)
+                    .map(|batch| (batch.block_number(), EventBatch::Orders(batch))),
+                EventSource::OrderDiffs => simd_json::from_slice::<Batch<NodeDataOrderDiff>>(&mut line_bytes)
+                    .map(|batch| (batch.block_number(), EventBatch::BookDiffs(batch))),
             };
             let (height, event_batch) = match res {
                 Ok(data) => data,

@@ -5,7 +5,6 @@ use std::{
 
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
-use tokio::fs::read_to_string;
 
 use crate::{
     order_book::{Coin, InnerOrder, Oid, OrderBook, Snapshot, Sz},
@@ -71,13 +70,13 @@ impl<O: Send + Sync + InnerOrder> OrderBooks<O> {
     }
 }
 
-pub(crate) fn load_snapshots_from_str<O, R>(str: &str) -> Result<(u64, Snapshots<O>)>
+pub(crate) fn load_snapshots_from_bytes<O, R>(bytes: &mut [u8]) -> Result<(u64, Snapshots<O>)>
 where
     O: TryFrom<R, Error = Error>,
     R: Serialize + for<'a> Deserialize<'a>,
 {
     #[allow(clippy::type_complexity)]
-    let (height, snapshot): (u64, Vec<(String, [Vec<R>; 2])>) = serde_json::from_str(str)?;
+    let (height, snapshot): (u64, Vec<(String, [Vec<R>; 2])>) = simd_json::from_slice(bytes)?;
     Ok((
         height,
         Snapshots::new(
@@ -98,8 +97,8 @@ where
     O: TryFrom<R, Error = Error>,
     R: Serialize + for<'a> Deserialize<'a>,
 {
-    let file_contents = read_to_string(path).await?;
-    load_snapshots_from_str(&file_contents)
+    let mut file_contents = tokio::fs::read(path).await?;
+    load_snapshots_from_bytes(&mut file_contents)
 }
 
 #[cfg(test)]
@@ -113,7 +112,7 @@ mod tests {
         order_book::{
             InnerOrder, OrderBook, Px, Side, Snapshot, Sz,
             levels::build_l2_level,
-            multi_book::{Coin, Snapshots, load_snapshots_from_json, load_snapshots_from_str},
+            multi_book::{Coin, Snapshots, load_snapshots_from_bytes, load_snapshots_from_json},
         },
         prelude::*,
         types::{
@@ -289,7 +288,8 @@ mod tests {
 
     #[test]
     fn test_deserialization() -> Result<()> {
-        load_snapshots_from_str::<InnerL4Order, (Address, L4Order)>(SNAPSHOT_JSON)?;
+        let mut bytes = SNAPSHOT_JSON.as_bytes().to_vec();
+        load_snapshots_from_bytes::<InnerL4Order, (Address, L4Order)>(&mut bytes)?;
         Ok(())
     }
 
