@@ -9,7 +9,7 @@ use std::{
 
 use alloy_primitives::Address;
 use fs::File;
-use log::{error, info};
+use log::{debug, error, info};
 use notify::{Event, RecursiveMode, Watcher, recommended_watcher};
 use tokio::{
     sync::{
@@ -449,22 +449,57 @@ impl OrderBookListener {
     }
 
     fn init_from_snapshot(&mut self, snapshot: Snapshots<InnerL4Order>, height: u64) {
-        info!("No existing snapshot");
+        info!("Initializing from snapshot at height {height}");
+
+        // Discard cached updates that are at or before the snapshot height
+        self.sync_caches_to_height(height);
+
         let mut new_order_book = OrderBookState::from_snapshot(snapshot, height, 0, true, self.ignore_spot);
         let mut retry = false;
+
         while let Some((order_statuses, order_diffs)) = self.pop_cache() {
-            if new_order_book.apply_updates(order_statuses, order_diffs).is_err() {
+            let update_height = order_statuses.block_number();
+            if update_height <= height {
+                // Skip updates at or before snapshot height
+                continue;
+            }
+            if update_height > new_order_book.height() + 1 {
+                // Gap detected - wait for next snapshot
                 info!(
-                    "Failed to apply updates to this book (likely missing older updates). Waiting for next snapshot."
+                    "Gap in updates: expected block {}, got block {}. Waiting for next snapshot.",
+                    new_order_book.height() + 1,
+                    update_height
                 );
                 retry = true;
                 break;
             }
+            if new_order_book.apply_updates(order_statuses, order_diffs).is_err() {
+                info!("Failed to apply updates. Waiting for next snapshot.");
+                retry = true;
+                break;
+            }
         }
+
         if !retry {
             self.order_book_state = Some(new_order_book);
-            info!("Order book ready");
+            info!("Order book ready at height {}", height);
         }
+    }
+
+    /// Discard cached updates at or before the given height
+    fn sync_caches_to_height(&mut self, height: u64) {
+        while self.order_diff_cache.front().is_some_and(|b| b.block_number() <= height) {
+            self.order_diff_cache.pop_front();
+        }
+        while self.order_status_cache.front().is_some_and(|b| b.block_number() <= height) {
+            self.order_status_cache.pop_front();
+        }
+        info!(
+            "Synced caches to height {}: {} diffs, {} statuses remaining",
+            height,
+            self.order_diff_cache.len(),
+            self.order_status_cache.len()
+        );
     }
 
     // forcibly grab current snapshot
@@ -603,7 +638,7 @@ impl DirectoryListener for OrderBookListener {
                 Ok(data) => data,
                 Err(err) => {
                     // if we run into a serialization error (hitting EOF), just return to last line.
-                    error!(
+                    debug!(
                         "{event_source} serialization error {err}, height: {:?}, line: {:?}",
                         self.order_book_state.as_ref().map(OrderBookState::height),
                         &line[..100],
