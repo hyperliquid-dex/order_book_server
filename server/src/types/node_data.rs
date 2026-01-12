@@ -29,6 +29,10 @@ impl NodeDataOrderDiff {
     pub(crate) fn coin(&self) -> Coin {
         Coin::new(&self.coin)
     }
+
+    pub(crate) fn px(&self) -> &str {
+        &self.px
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

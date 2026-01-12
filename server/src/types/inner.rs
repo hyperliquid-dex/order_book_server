@@ -62,6 +62,10 @@ impl InnerOrder for InnerL4Order {
         match_sz
     }
 
+    fn modify_px(&mut self, px: Px) {
+        self.limit_px = px;
+    }
+
     fn convert_trigger(&mut self, ts: u64) {
         if self.is_trigger {
             self.trigger_px = "0.0".to_string();

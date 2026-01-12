@@ -1,7 +1,7 @@
 use crate::{
     listeners::order_book::{L2Snapshots, TimedSnapshots, utils::compute_l2_snapshots},
     order_book::{
-        Coin, InnerOrder, Oid,
+        Coin, InnerOrder, Oid, Px,
         multi_book::{OrderBooks, Snapshots},
     },
     prelude::*,
@@ -100,6 +100,10 @@ impl OrderBookState {
                         let time = order.time.and_utc().timestamp_millis();
                         let mut inner_order: InnerL4Order = order.try_into()?;
                         inner_order.modify_sz(sz);
+                        // Use px from book diff (more accurate than order status px)
+                        if let Ok(diff_px) = Px::parse_from_str(diff.px()) {
+                            inner_order.modify_px(diff_px);
+                        }
                         // must replace time with time of entering book, which is the timestamp of the order status update
                         #[allow(clippy::unwrap_used)]
                         inner_order.convert_trigger(time.try_into().unwrap());
