@@ -31,7 +31,7 @@ impl Subscription {
         match self {
             Self::Trades { coin } => universe.contains(coin),
             Self::L2Book { coin, n_sig_figs, n_levels, mantissa } => {
-                if !universe.contains(coin) || coin.starts_with('@') {
+                if !universe.contains(coin) {
                     info!("Invalid subscription: coin not found");
                     return false;
                 }
@@ -62,7 +62,7 @@ impl Subscription {
                 true
             }
             Self::L4Book { coin } => {
-                if !universe.contains(coin) || coin.starts_with('@') {
+                if !universe.contains(coin) {
                     info!("Invalid subscription: coin not found");
                     return false;
                 }

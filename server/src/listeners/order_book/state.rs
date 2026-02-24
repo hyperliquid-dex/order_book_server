@@ -1,7 +1,7 @@
 use crate::{
     listeners::order_book::{L2Snapshots, TimedSnapshots, utils::compute_l2_snapshots},
     order_book::{
-        Coin, InnerOrder, Oid,
+        Coin, InnerOrder, Oid, Px,
         multi_book::{OrderBooks, Snapshots},
     },
     prelude::*,
@@ -103,6 +103,26 @@ impl OrderBookState {
                         // must replace time with time of entering book, which is the timestamp of the order status update
                         #[allow(clippy::unwrap_used)]
                         inner_order.convert_trigger(time.try_into().unwrap());
+                        self.order_book.add_order(inner_order);
+                    } else if diff.special_address() {
+                        // Assume all orders from special addresses are Alo, Limit orders
+                        let inner_order = InnerL4Order {
+                            user: diff.user(),
+                            coin,
+                            side: diff.side(),
+                            limit_px: Px::parse_from_str(diff.px().as_str())?,
+                            sz,
+                            oid: oid.value(),
+                            timestamp: time,
+                            trigger_condition: "N/A".to_string(),
+                            is_trigger: false,
+                            trigger_px: "0.0".to_string(),
+                            is_position_tpsl: false,
+                            reduce_only: false,
+                            order_type: "Limit".to_string(),
+                            tif: Some("Alo".to_string()),
+                            cloid: None,
+                        };
                         self.order_book.add_order(inner_order);
                     } else {
                         return Err(format!("Unable to find order opening status {diff:?}").into());

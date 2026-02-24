@@ -15,6 +15,13 @@ struct Args {
     #[arg(long)]
     port: u16,
 
+    /// Enable to include orders from spot markets. This is "unsafe" because order statuses for new
+    /// orders from special addresses (e.g. the assistance fund and HIP-2) are not emitted so we
+    /// **unsafely** assume that these orders are all "Alo" limit orders. Default is false, meaning
+    /// that spot orders are ignored.
+    #[arg(long)]
+    include_spot_unsafe: Option<bool>, // Default is false
+
     /// Compression level for WebSocket connections.
     /// Accepts values in the range `0..=9`.
     /// * `0` – compression disabled.
@@ -36,8 +43,10 @@ async fn main() -> Result<()> {
     let full_address = format!("{}:{}", args.address, args.port);
     println!("Running websocket server on {full_address}");
 
+    let ignore_spot = !args.include_spot_unsafe.unwrap_or(false);
+
     let compression_level = args.websocket_compression_level.unwrap_or(/* Some compression */ 1);
-    run_websocket_server(&full_address, true, compression_level).await?;
+    run_websocket_server(&full_address, ignore_spot, compression_level).await?;
 
     Ok(())
 }
