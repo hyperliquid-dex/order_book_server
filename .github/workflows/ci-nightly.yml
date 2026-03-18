@@ -1,0 +1,76 @@
+name: CI Nightly
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1"
+  push:
+    branches:
+      - main
+
+env:
+  RUST_TOOLCHAIN: nightly
+
+jobs:
+  sanitizer-asan:
+    name: Sanitizer (ASan)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - name: AddressSanitizer
+        run: |
+          ASAN_OPTIONS=detect_leaks=0 \
+          RUSTFLAGS="-Z sanitizer=address" \
+          cargo +${{ env.RUST_TOOLCHAIN }} test --workspace --all-features -Z build-std --target x86_64-unknown-linux-gnu
+
+  sanitizer-tsan:
+    name: Sanitizer (TSan)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - name: ThreadSanitizer
+        run: |
+          RUSTFLAGS="-Z sanitizer=thread" \
+          RUSTDOCFLAGS="-Z sanitizer=thread" \
+          cargo +${{ env.RUST_TOOLCHAIN }} test --workspace --all-features -Z build-std --target x86_64-unknown-linux-gnu
+
+  unit-tests-flaky:
+    name: Unit tests (flaky)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: |
+          for i in {1..16}; do
+            cargo test --workspace --all-features -- -Z unstable-options --shuffle
+          done
+
+  summary:
+    name: Sanitizer Summary
+    runs-on: ubuntu-24.04
+    needs: [sanitizer-asan, sanitizer-tsan, unit-tests-flaky]
+    if: always()
+    steps:
+      - name: Write CI summary
+        run: |
+          {
+            echo "## Sanitizer Summary"
+            echo ""
+            echo "- **ASan:** ${{ needs.sanitizer-asan.result }}"
+            echo "- **TSan:** ${{ needs.sanitizer-tsan.result }}"
+            echo "- **Unit (flaky):** ${{ needs.unit-tests-flaky.result }}"
+            echo ""
+            echo "### Commit"
+            echo "[${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})"
+            echo ""
+            echo "Triggered by: @${{ github.actor }}"
+            echo "Event: \`${{ github.event_name }}\`"
+            echo ""
+            echo "[View workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          } >> "$GITHUB_STEP_SUMMARY"

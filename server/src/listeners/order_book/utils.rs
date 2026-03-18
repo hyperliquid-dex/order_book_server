@@ -1,3 +1,12 @@
+use std::{
+    collections::{HashMap, VecDeque},
+    path::{Path, PathBuf},
+};
+
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use reqwest::Client;
+use serde_json::json;
+
 use crate::{
     listeners::order_book::{L2SnapshotParams, L2Snapshots},
     order_book::{
@@ -11,17 +20,36 @@ use crate::{
         node_data::{Batch, NodeDataFill, NodeDataOrderDiff, NodeDataOrderStatus},
     },
 };
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use reqwest::Client;
-use serde_json::json;
-use std::collections::VecDeque;
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-};
+use log::info;
+use tokio::fs;
 
+/// Fetches an L4 snapshot and writes it to `out.json`.
+///
+/// First attempts the `fileSnapshot` API. The output path for the API is set
+/// inside `hl/` (the shared volume) so the node process can write it and the
+/// order book server can read it — important when running in separate containers.
+///
+/// If the API fails, falls back to reading the latest periodic ABCI state file
+/// and computing L4 snapshots via `hl-node compute-l4-snapshots`. The fallback
+/// requires `hl-node` on PATH (or via `HL_NODE_PATH` env var).
 pub(super) async fn process_rmp_file(dir: &Path) -> Result<PathBuf> {
-    let output_path = dir.join("out.json");
+    // API: write into the shared volume so the node and OBS can both access it
+    let api_output_path = dir.join("hl/out.json");
+    // CLI: write to local filesystem (OBS runs hl-node as a subprocess)
+    let cli_output_path = dir.join("out.json");
+
+    match process_via_api(&api_output_path).await {
+        Ok(()) => return Ok(api_output_path),
+        Err(err) => {
+            info!("fileSnapshot API unavailable ({err}), trying periodic ABCI state fallback");
+        }
+    }
+
+    process_via_cli(dir, &cli_output_path).await?;
+    Ok(cli_output_path)
+}
+
+async fn process_via_api(output_path: &Path) -> Result<()> {
     let payload = json!({
         "type": "fileSnapshot",
         "request": {
@@ -33,7 +61,9 @@ pub(super) async fn process_rmp_file(dir: &Path) -> Result<PathBuf> {
         "includeHeightInOutput": true
     });
 
-    let client = Client::new();
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
     client
         .post("http://localhost:3001/info")
         .header("Content-Type", "application/json")
@@ -41,7 +71,81 @@ pub(super) async fn process_rmp_file(dir: &Path) -> Result<PathBuf> {
         .send()
         .await?
         .error_for_status()?;
-    Ok(output_path)
+    Ok(())
+}
+
+async fn process_via_cli(dir: &Path, output_path: &Path) -> Result<()> {
+    let abci_states_dir = dir.join("hl/data/periodic_abci_states");
+    let (rmp_path, height) = find_latest_rmp(&abci_states_dir).await?;
+    info!("Using periodic ABCI state at height {height}: {}", rmp_path.display());
+
+    let hl_node = std::env::var("HL_NODE_PATH").unwrap_or_else(|_| "hl-node".to_string());
+    let chain = std::env::var("HL_CHAIN").unwrap_or_else(|_| "Mainnet".to_string());
+    let raw_output = dir.join("l4_raw.json");
+
+    let result = tokio::process::Command::new(&hl_node)
+        .args(["--chain", &chain, "compute-l4-snapshots", "--include-users"])
+        .arg(&rmp_path)
+        .arg(&raw_output)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run '{hl_node}': {e}. Set HL_NODE_PATH to the hl-node binary location."))?;
+
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        return Err(format!("hl-node compute-l4-snapshots failed: {stderr}").into());
+    }
+
+    // The CLI outputs [[coin, [bids, asks]], ...] without a height prefix.
+    // Wrap it as [height, data] to match the fileSnapshot API format.
+    let raw_content = fs::read_to_string(&raw_output).await?;
+    let wrapped = format!("[{height},{raw_content}]");
+    fs::write(output_path, wrapped).await?;
+
+    // Clean up temporary file
+    drop(fs::remove_file(&raw_output).await);
+
+    Ok(())
+}
+
+async fn find_latest_rmp(abci_states_dir: &Path) -> Result<(PathBuf, u64)> {
+    let mut latest_date: Option<String> = None;
+    let mut entries = fs::read_dir(abci_states_dir)
+        .await
+        .map_err(|e| format!("Cannot read periodic_abci_states directory: {e}"))?;
+
+    while let Some(entry) = entries.next_entry().await? {
+        if entry.file_type().await?.is_dir() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if latest_date.as_ref().is_none_or(|d| name > *d) {
+                latest_date = Some(name);
+            }
+        }
+    }
+
+    let date_dir = latest_date.ok_or("No date directories found in periodic_abci_states")?;
+    let date_path = abci_states_dir.join(&date_dir);
+
+    let mut latest_height: Option<u64> = None;
+    let mut latest_path: Option<PathBuf> = None;
+    let mut entries = fs::read_dir(&date_path).await?;
+
+    while let Some(entry) = entries.next_entry().await? {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if let Some(height_str) = name.strip_suffix(".rmp") {
+            if let Ok(height) = height_str.parse::<u64>() {
+                if latest_height.is_none_or(|h| height > h) {
+                    latest_height = Some(height);
+                    latest_path = Some(entry.path());
+                }
+            }
+        }
+    }
+
+    match (latest_path, latest_height) {
+        (Some(path), Some(height)) => Ok((path, height)),
+        _ => Err("No .rmp files found in periodic_abci_states".into()),
+    }
 }
 
 pub(super) fn validate_snapshot_consistency<O: Clone + PartialEq + Debug>(
@@ -135,10 +239,10 @@ impl<T> BatchQueue<T> {
     }
 
     pub(super) fn push(&mut self, block: Batch<T>) -> bool {
-        if let Some(last_ts) = self.last_ts {
-            if last_ts >= block.block_number() {
-                return false;
-            }
+        if let Some(last_ts) = self.last_ts
+            && last_ts >= block.block_number()
+        {
+            return false;
         }
         self.last_ts = Some(block.block_number());
         self.deque.push_back(block);

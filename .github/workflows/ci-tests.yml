@@ -1,0 +1,55 @@
+name: CI Tests
+
+on:
+  pull_request:
+    branches:
+      - '**'
+  push:
+    branches:
+      - main
+
+jobs:
+  clippy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy, rustfmt
+
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo test --workspace --all-features -- -Z unstable-options --shuffle
+
+  summary:
+    name: CI Summary
+    runs-on: ubuntu-24.04
+    needs: [clippy, unit-tests]
+    if: always() # Always run, even if earlier jobs fail
+    steps:
+      - name: Write CI summary
+        run: |
+          {
+            echo "## CI Test Summary"
+            echo ""
+            echo "- **Clippy + fmt:** ${{ needs.clippy.result }}"
+            echo "- **Unit:** ${{ needs.unit-tests.result }}"
+            echo ""
+            echo "### Commit"
+            echo "[${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})"
+            echo ""
+            echo "Triggered by: @${{ github.actor }}"
+            echo "Event: \`${{ github.event_name }}\`"
+            echo ""
+            echo "[View workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          } >> "$GITHUB_STEP_SUMMARY"

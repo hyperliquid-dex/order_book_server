@@ -1,7 +1,9 @@
-use crate::order_book::{InnerOrder, Oid, OrderBook, Px, Side, Snapshot, Sz, linked_list::LinkedList};
-use crate::types::Level;
-use crate::types::inner::InnerLevel;
 use std::collections::BTreeMap;
+
+use crate::{
+    order_book::{InnerOrder, Oid, OrderBook, Px, Side, Snapshot, Sz, linked_list::LinkedList},
+    types::{Level, inner::InnerLevel},
+};
 
 #[must_use]
 fn bucket(px: Px, side: Side, n_sig_figs: Option<u32>, mantissa: Option<u64>) -> Px {

@@ -1,14 +1,16 @@
-use crate::{
-    order_book::{Coin, InnerOrder, Oid, OrderBook, Snapshot, Sz},
-    prelude::*,
-};
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
     path::Path,
 };
+
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use serde::{Deserialize, Serialize};
 use tokio::fs::read_to_string;
+
+use crate::{
+    order_book::{Coin, InnerOrder, Oid, OrderBook, Snapshot, Sz},
+    prelude::*,
+};
 
 pub(crate) struct Snapshots<O>(HashMap<Coin, Snapshot<O>>);
 
@@ -102,6 +104,12 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::fs::create_dir_all;
+
+    use alloy::primitives::Address;
+    use itertools::Itertools;
+    use tempfile::tempdir;
+
     use crate::{
         order_book::{
             InnerOrder, OrderBook, Px, Side, Snapshot, Sz,
@@ -114,9 +122,6 @@ mod tests {
             inner::{InnerL4Order, InnerLevel},
         },
     };
-    use alloy::primitives::Address;
-    use itertools::Itertools;
-    use std::{fs::create_dir_all, path::PathBuf};
 
     #[must_use]
     fn snapshot_to_l2_snapshot<O: InnerOrder>(
@@ -274,12 +279,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_deserialization_from_json() -> Result<()> {
-        create_dir_all("tmp/deserialization_test")?;
-        fs::write("tmp/deserialization_test/out.json", SNAPSHOT_JSON)?;
-        load_snapshots_from_json::<InnerL4Order, (Address, L4Order)>(&PathBuf::from(
-            "tmp/deserialization_test/out.json",
-        ))
-        .await?;
+        let temp_dir = tempdir()?;
+        let test_dir = temp_dir.path().join("deserialization_test");
+        create_dir_all(&test_dir)?;
+        let snapshot_path = test_dir.join("out.json");
+        fs::write(&snapshot_path, SNAPSHOT_JSON)?;
+        load_snapshots_from_json::<InnerL4Order, (Address, L4Order)>(&snapshot_path).await?;
         Ok(())
     }
 

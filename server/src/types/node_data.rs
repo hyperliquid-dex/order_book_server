@@ -5,14 +5,18 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    order_book::{Coin, Oid},
+    order_book::{Coin, Oid, Side},
     types::{Fill, L4Order, OrderDiff},
 };
+
+const ASSISTANCE_FUND: Address = Address::repeat_byte(0xFE);
+const HIP_2: Address = Address::repeat_byte(0xFF);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct NodeDataOrderDiff {
     user: Address,
     oid: u64,
+    side: Side,
     px: String,
     coin: String,
     pub(crate) raw_book_diff: OrderDiff,
@@ -28,6 +32,18 @@ impl NodeDataOrderDiff {
 
     pub(crate) fn coin(&self) -> Coin {
         Coin::new(&self.coin)
+    }
+    pub(crate) fn user(&self) -> Address {
+        self.user
+    }
+    pub(crate) fn side(&self) -> Side {
+        self.side
+    }
+    pub(crate) fn px(&self) -> String {
+        self.px.clone()
+    }
+    pub(crate) fn special_address(&self) -> bool {
+        self.user == ASSISTANCE_FUND || self.user == HIP_2
     }
 }
 
