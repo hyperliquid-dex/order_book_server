@@ -11,7 +11,7 @@ use crate::{
 };
 
 // L4Order: the struct we keep in the orderbook (computationally better)
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Eq)]
 pub(crate) struct InnerL4Order {
     pub user: Address,
     pub coin: Coin,
@@ -28,6 +28,17 @@ pub(crate) struct InnerL4Order {
     pub order_type: String,
     pub tif: Option<String>,
     pub cloid: Option<String>,
+}
+
+impl PartialEq for InnerL4Order {
+    fn eq(&self, other: &Self) -> bool {
+        self.user == other.user
+            && self.coin == other.coin
+            && self.side == other.side
+            && self.limit_px == other.limit_px
+            && self.sz == other.sz
+            && self.oid == other.oid
+    }
 }
 
 impl InnerOrder for InnerL4Order {

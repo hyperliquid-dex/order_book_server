@@ -21,6 +21,11 @@ pub(crate) struct OrderBook<O> {
 pub(crate) struct Snapshot<O>([Vec<O>; 2]);
 
 impl<O: Clone> Snapshot<O> {
+    #[cfg(test)]
+    pub(crate) fn new(bids: Vec<O>, asks: Vec<O>) -> Self {
+        Self([bids, asks])
+    }
+
     pub(crate) const fn as_ref(&self) -> &[Vec<O>; 2] {
         &self.0
     }
