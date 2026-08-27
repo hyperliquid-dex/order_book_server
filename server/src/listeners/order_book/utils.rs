@@ -153,3 +153,42 @@ impl<T> BatchQueue<T> {
         self.deque.front()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::inner::InnerL4Order;
+    use crate::order_book::types::{Coin, Px, Sz, Side};
+    use alloy::primitives::Address;
+
+    #[test]
+    fn test_snapshot_consistency_timestamp_mismatch() {
+        let user = Address::ZERO;
+        let coin = Coin::new("ETH");
+        let order1 = InnerL4Order {
+            user,
+            coin: coin.clone(),
+            side: Side::Bid,
+            limit_px: Px::new(1000),
+            sz: Sz::new(1),
+            oid: 1,
+            timestamp: 100,
+            trigger_condition: "".to_string(),
+            is_trigger: false,
+            trigger_px: "".to_string(),
+            is_position_tpsl: false,
+            reduce_only: false,
+            order_type: "".to_string(),
+            tif: None,
+            cloid: None,
+        };
+        let mut order2 = order1.clone();
+        order2.timestamp = 200;
+
+        let snapshot = Snapshots::new(HashMap::from_iter(vec![(coin.clone(), Snapshot::new(vec![order1], vec![]))]));
+        let expected = Snapshots::new(HashMap::from_iter(vec![(coin.clone(), Snapshot::new(vec![order2], vec![]))]));
+
+        let result = validate_snapshot_consistency(&snapshot, expected, false);
+        assert!(result.is_ok(), "Should succeed despite timestamp mismatch");
+    }
+}
