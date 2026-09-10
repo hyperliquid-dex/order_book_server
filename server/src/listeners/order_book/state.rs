@@ -18,7 +18,8 @@ pub(super) struct OrderBookState {
     height: u64,
     time: u64,
     snapped: bool,
-    ignore_spot: bool,
+    include_spot: bool,
+    include_triggers: bool,
 }
 
 impl OrderBookState {
@@ -27,10 +28,11 @@ impl OrderBookState {
         height: u64,
         time: u64,
         ignore_triggers: bool,
-        ignore_spot: bool,
+        include_spot: bool,
     ) -> Self {
         Self {
-            ignore_spot,
+            include_spot,
+            include_triggers: !ignore_triggers,  // Invert for clarity
             time,
             height,
             order_book: OrderBooks::from_snapshots(snapshot, ignore_triggers),
@@ -70,7 +72,10 @@ impl OrderBookState {
         let time = order_statuses.block_time();
         assert_eq!(order_statuses.block_number(), order_diffs.block_number());
         if height > self.height + 1 {
-            return Err(format!("Expecting block {}, got block {}", self.height + 1, height).into());
+            return Err(OrderBookError::BlockHeightMismatch {
+                expected: self.height + 1,
+                actual: height,
+            });
         } else if height <= self.height {
             // This is not an error in case we started caching long before a snapshot is fetched
             return Ok(());
@@ -86,7 +91,7 @@ impl OrderBookState {
                     None
                 }
             })
-            .collect::<HashMap<_, _>>();
+            .collect::<HashMap<Oid, _>>();
         while let Some(diff) = diffs.pop_front() {
             let oid = diff.oid();
             let coin = diff.coin();
@@ -104,20 +109,20 @@ impl OrderBookState {
                         #[allow(clippy::unwrap_used)]
                         inner_order.convert_trigger(time.try_into().unwrap());
                         if !self.order_book.add_order_before(inner_order, insert_before) {
-                            return Err(format!("Unable to find insertBefore order on the book {diff:?}").into());
+                            return Err(OrderBookError::InsertBeforeNotFound(oid.value()));
                         }
                     } else {
-                        return Err(format!("Unable to find order opening status {diff:?}").into());
+                        return Err(OrderBookError::OrderStatusNotFound(oid.value()));
                     }
                 }
                 InnerOrderDiff::Update { new_sz, .. } => {
                     if !self.order_book.modify_sz(oid, coin, new_sz) {
-                        return Err(format!("Unable to find order on the book {diff:?}").into());
+                        return Err(OrderBookError::OrderNotFound(oid.value()));
                     }
                 }
                 InnerOrderDiff::Remove => {
                     if !self.order_book.cancel_order(oid, coin) {
-                        return Err(format!("Unable to find order on the book {diff:?}").into());
+                        return Err(OrderBookError::OrderNotFound(oid.value()));
                     }
                 }
             }

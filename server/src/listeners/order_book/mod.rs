@@ -1,16 +1,8 @@
 use crate::{
-    HL_NODE,
     listeners::{directory::DirectoryListener, order_book::state::OrderBookState},
-    order_book::{
-        Coin, Snapshot,
-        multi_book::{Snapshots, load_snapshots_from_json},
-    },
+    order_book::{Coin, Snapshot, multi_book::{Snapshots, load_snapshots_from_json}},
     prelude::*,
-    types::{
-        L4Order,
-        inner::{InnerL4Order, InnerLevel},
-        node_data::{Batch, EventSource, NodeDataFill, NodeDataOrderDiff, NodeDataOrderStatus},
-    },
+    types::{L4Order, inner::{InnerL4Order, InnerLevel}, node_data::{Batch, EventSource, NodeDataFill, NodeDataOrderDiff, NodeDataOrderStatus}},
 };
 use alloy::primitives::Address;
 use fs::File;
@@ -56,9 +48,9 @@ pub(crate) async fn hl_listen(listener: Arc<Mutex<OrderBookListener>>, dir: Path
         }
     })?;
 
-    let ignore_spot = {
+    let (include_spot, include_triggers) = {
         let listener = listener.lock().await;
-        listener.ignore_spot
+        (listener.include_spot, listener.include_triggers)
     };
 
     // every so often, we fetch a new snapshot and the snapshot_fetch_task starts running.
@@ -81,38 +73,44 @@ pub(crate) async fn hl_listen(listener: Arc<Mutex<OrderBookListener>>, dir: Path
                                 .lock()
                                 .await
                                 .process_update(&event, new_path, EventSource::OrderStatuses)
-                                .map_err(|err| format!("Order status processing error: {err}"))?;
+                                .map_err(|err| OrderBookError::FileWatch(
+                                    format!("Order status processing error: {err}")
+                                ))?;
                         } else if new_path.starts_with(&fills_dir) && new_path.is_file() {
                             listener
                                 .lock()
                                 .await
                                 .process_update(&event, new_path, EventSource::Fills)
-                                .map_err(|err| format!("Fill update processing error: {err}"))?;
+                                .map_err(|err| OrderBookError::FileWatch(
+                                    format!("Fill update processing error: {err}")
+                                ))?;
                         } else if new_path.starts_with(&order_diffs_dir) && new_path.is_file() {
                             listener
                                 .lock()
                                 .await
                                 .process_update(&event, new_path, EventSource::OrderDiffs)
-                                .map_err(|err| format!("Book diff processing error: {err}"))?;
+                                .map_err(|err| OrderBookError::FileWatch(
+                                    format!("Book diff processing error: {err}")
+                                ))?;
                         }
                     }
                 }
                 Some(Err(err)) => {
                     error!("Watcher error: {err}");
-                    return Err(format!("Watcher error: {err}").into());
+                    return Err(OrderBookError::FileWatch(format!("Watcher error: {err}")));
                 }
                 None => {
                     error!("Channel closed. Listener exiting");
-                    return Err("Channel closed.".into());
+                    return Err(OrderBookError::Channel("File system event channel closed".to_string()));
                 }
             },
             snapshot_fetch_res = snapshot_fetch_task_rx.recv() => {
                 match snapshot_fetch_res {
                     None => {
-                        return Err("Snapshot fetch task sender dropped".into());
+                        return Err(OrderBookError::Channel("Snapshot fetch task sender dropped".to_string()));
                     }
                     Some(Err(err)) => {
-                        return Err(format!("Abci state reading error: {err}").into());
+                        return Err(OrderBookError::NodeCommunication(format!("Abci state reading error: {err}")));
                     }
                     Some(Ok(())) => {}
                 }
@@ -125,7 +123,7 @@ pub(crate) async fn hl_listen(listener: Arc<Mutex<OrderBookListener>>, dir: Path
             () = sleep(Duration::from_secs(5)) => {
                 let listener = listener.lock().await;
                 if listener.is_ready() {
-                    return Err(format!("Stream has fallen behind ({HL_NODE} failed?)").into());
+                    return Err(OrderBookError::StreamFallenBehind);
                 }
             }
         }
@@ -163,11 +161,15 @@ fn fetch_snapshot(
                                 if let Some((order_statuses, order_diffs)) = cache.pop_front() {
                                     state.apply_updates(order_statuses, order_diffs)?;
                                 } else {
-                                    return Err::<(), Error>("Not enough cached updates".into());
+                                    return Err::<(), OrderBookError>(OrderBookError::SnapshotValidation(
+                                        "Not enough cached updates".to_string()
+                                    ));
                                 }
                             }
                             if state.height() > height {
-                                return Err("Fetched snapshot lagging stored state".into());
+                                return Err(OrderBookError::SnapshotValidation(
+                                    "Fetched snapshot lagging stored state".to_string()
+                                ));
                             }
                             let stored_snapshot = state.compute_snapshot().snapshot;
                             info!("Validating snapshot");
@@ -188,7 +190,8 @@ fn fetch_snapshot(
 }
 
 pub(crate) struct OrderBookListener {
-    ignore_spot: bool,
+    include_spot: bool,
+    include_triggers: bool,
     fill_status_file: Option<File>,
     order_status_file: Option<File>,
     order_diff_file: Option<File>,
@@ -203,9 +206,10 @@ pub(crate) struct OrderBookListener {
 }
 
 impl OrderBookListener {
-    pub(crate) const fn new(internal_message_tx: Option<Sender<Arc<InternalMessage>>>, ignore_spot: bool) -> Self {
+    pub(crate) const fn new(internal_message_tx: Option<Sender<Arc<InternalMessage>>>, include_spot: bool, include_triggers: bool) -> Self {
         Self {
-            ignore_spot,
+            include_spot,
+            include_triggers,
             fill_status_file: None,
             order_status_file: None,
             order_diff_file: None,

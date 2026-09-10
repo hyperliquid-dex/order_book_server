@@ -17,7 +17,7 @@ pub(crate) trait DirectoryListener {
 
     fn on_file_modification(&mut self, event_source: EventSource) -> Result<()> {
         let mut buf = String::new();
-        let file = self.file_mut(event_source).as_mut().ok_or("No file being tracked")?;
+        let file = self.file_mut(event_source).as_mut().ok_or(OrderBookError::FileWatch("No file being tracked".to_string()))?;
         file.read_to_string(&mut buf)?;
         self.process_data(buf, event_source)?;
         Ok(())
@@ -119,13 +119,13 @@ mod tests {
                 }
                 Some(Err(err)) => {
                     error!("Watcher error: {err}");
-                    return Err(Box::new(err));
+                    return Err(OrderBookError::FileWatch(format!("Watcher error: {err}")));
                 }
                 None => {
                     // The channel disconnected, likely because the sender (watcher) was dropped.
                     // This usually means the program is shutting down or there's a problem.
                     error!("Channel closed. Listener exiting");
-                    return Err("Channel closed.".into()); // Exit the loop
+                    return Err(OrderBookError::Channel("File system event channel closed".to_string()));
                 }
             }
         }

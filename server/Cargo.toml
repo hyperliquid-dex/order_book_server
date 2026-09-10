@@ -19,6 +19,7 @@ alloy = "1.0.22"
 strum_macros = "0.27.2"
 reqwest = "0.12.22"
 yawc = { version = "0.2.6", features = ["axum"] }
+thiserror = "2.0"
 
 [lints]
 workspace = true

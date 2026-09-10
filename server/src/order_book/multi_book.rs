@@ -72,7 +72,7 @@ impl<O: Send + Sync + InnerOrder> OrderBooks<O> {
 
 pub(crate) fn load_snapshots_from_str<O, R>(str: &str) -> Result<(u64, Snapshots<O>)>
 where
-    O: TryFrom<R, Error = Error>,
+    O: TryFrom<R, Error = OrderBookError>,
     R: Serialize + for<'a> Deserialize<'a>,
 {
     #[allow(clippy::type_complexity)]
@@ -94,7 +94,7 @@ where
 
 pub(crate) async fn load_snapshots_from_json<O, R>(path: &Path) -> Result<(u64, Snapshots<O>)>
 where
-    O: TryFrom<R, Error = Error>,
+    O: TryFrom<R, Error = OrderBookError>,
     R: Serialize + for<'a> Deserialize<'a>,
 {
     let file_contents = read_to_string(path).await?;

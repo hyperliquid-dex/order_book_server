@@ -25,6 +25,14 @@ struct Args {
     /// documentation for <https://docs.rs/flate2/1.1.2/flate2/struct.Compression.html#method.new> for more info.
     #[arg(long)]
     websocket_compression_level: Option<u32>,
+
+    /// Include spot markets in order book processing (default: false for backward compatibility)
+    #[arg(long, default_value_t = false)]
+    include_spot: bool,
+
+    /// Include untriggered trigger orders (default: false for backward compatibility)
+    #[arg(long, default_value_t = false)]
+    include_triggers: bool,
 }
 
 #[tokio::main]
@@ -35,9 +43,11 @@ async fn main() -> Result<()> {
 
     let full_address = format!("{}:{}", args.address, args.port);
     println!("Running websocket server on {full_address}");
+    println!("Spot markets: {}", if args.include_spot { "ENABLED" } else { "DISABLED (default for backward compatibility)" });
+    println!("Trigger orders: {}", if args.include_triggers { "ENABLED" } else { "DISABLED (default for backward compatibility)" });
 
     let compression_level = args.websocket_compression_level.unwrap_or(/* Some compression */ 1);
-    run_websocket_server(&full_address, true, compression_level).await?;
+    run_websocket_server(&full_address, args.include_spot, args.include_triggers, compression_level).await?;
 
     Ok(())
 }

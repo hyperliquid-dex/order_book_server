@@ -4,7 +4,7 @@ use linked_list::LinkedList;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub(crate) mod levels;
-mod linked_list;
+pub(crate) mod linked_list;
 pub(crate) mod multi_book;
 pub(crate) mod types;
 

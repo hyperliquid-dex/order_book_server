@@ -33,7 +33,7 @@ pub async fn run_websocket_server(address: &str, ignore_spot: bool, compression_
     let (internal_message_tx, _) = channel::<Arc<InternalMessage>>(100);
 
     // Central task: listen to messages and forward them for distribution
-    let home_dir = home_dir().ok_or("Could not find home directory")?;
+    let home_dir = home_dir().ok_or(OrderBookError::HomeDirectoryNotFound)?;
     let listener = {
         let internal_message_tx = internal_message_tx.clone();
         OrderBookListener::new(Some(internal_message_tx), ignore_spot)
@@ -366,7 +366,7 @@ impl Subscription {
                     })));
                 }
             }
-            return Err("Snapshot Failed".into());
+            return Err(OrderBookError::NotReady);
         }
         Ok(None)
     }

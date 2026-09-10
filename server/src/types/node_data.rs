@@ -4,10 +4,7 @@ use alloy::primitives::Address;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    order_book::{Coin, Oid},
-    types::{Fill, L4Order, OrderDiff},
-};
+use crate::{order_book::{Coin, Oid}, types::{Fill, L4Order, OrderDiff}};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct NodeDataOrderDiff {

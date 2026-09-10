@@ -1,15 +1,8 @@
 use crate::{
     listeners::order_book::{L2SnapshotParams, L2Snapshots},
-    order_book::{
-        Snapshot,
-        multi_book::{OrderBooks, Snapshots},
-        types::InnerOrder,
-    },
+    order_book::{Snapshot, multi_book::{OrderBooks, Snapshots}, types::InnerOrder},
     prelude::*,
-    types::{
-        inner::InnerLevel,
-        node_data::{Batch, NodeDataFill, NodeDataOrderDiff, NodeDataOrderStatus},
-    },
+    types::{inner::InnerLevel, node_data::{Batch, NodeDataFill, NodeDataOrderDiff, NodeDataOrderStatus}},
 };
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use reqwest::Client;
@@ -61,18 +54,20 @@ pub(super) fn validate_snapshot_consistency<O: Clone + PartialEq + Debug>(
             for (orders1, orders2) in book1.as_ref().iter().zip(book2.as_ref()) {
                 for (order1, order2) in orders1.iter().zip(orders2.iter()) {
                     if *order1 != *order2 {
-                        return Err(
-                            format!("Orders do not match, expected: {:?} received: {:?}", *order2, *order1).into()
-                        );
+                        return Err(OrderBookError::SnapshotValidation(
+                            format!("Orders do not match, expected: {:?} received: {:?}", *order2, *order1)
+                        ));
                     }
                 }
             }
         } else if !book1[0].is_empty() || !book1[1].is_empty() {
-            return Err(format!("Missing {} book", coin.value()).into());
+            return Err(OrderBookError::SnapshotValidation(
+                format!("Missing {} book", coin.value())
+            ));
         }
     }
     if !snapshot_map.is_empty() {
-        return Err("Extra orderbooks detected".to_string().into());
+        return Err(OrderBookError::SnapshotValidation("Extra orderbooks detected".to_string()));
     }
     Ok(())
 }

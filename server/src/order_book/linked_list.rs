@@ -108,7 +108,7 @@ impl<K: Clone + Eq + Hash, T: Clone> LinkedList<K, T> {
             }
             Ok(())
         } else {
-            Err("List is empty".into())
+            Err(OrderBookError::Generic("List is empty".to_string()))
         }
     }
 
@@ -224,6 +224,120 @@ mod tests {
         }
 
         assert!(list.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn edge_case_single_element_test() -> Result<()> {
+        let mut list = LinkedList::new();
+        // Test push_back and remove_front on single element
+        list.push_back(42, "value");
+        assert!(!list.is_empty());
+        assert!(list.head_value_ref_mut_unsafe().is_some());
+        list.remove_front()?;
+        assert!(list.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn edge_case_remove_front_empty_test() -> Result<()> {
+        let mut list = LinkedList::new();
+        // Removing from empty list should return error
+        let result = list.remove_front();
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn edge_case_remove_nonexistent_node() {
+        let mut list = LinkedList::new();
+        list.push_back(1, "val1");
+        list.push_back(2, "val2");
+        // Removing non-existent node should return false
+        assert!(!list.remove_node(99));
+        // Original list should be unchanged
+        let mut count = 0;
+        let mut current = list.head;
+        while let Some(c) = current {
+            count += 1;
+            current = list.slab[c].next;
+        }
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn stress_test_large_list() -> Result<()> {
+        let mut list = LinkedList::new();
+        let size = 10_000usize;
+        // Insert many elements
+        for i in 0..size {
+            list.push_back(i, format!("value_{}", i));
+        }
+        // Verify all elements present
+        assert!(!list.is_empty());
+        assert_eq!(list.to_vec().len(), size);
+        // Remove half
+        for i in 0..(size / 2) {
+            assert!(list.remove_node(i));
+        }
+        // Verify remaining elements
+        assert_eq!(list.to_vec().len(), size / 2);
+        Ok(())
+    }
+
+    #[test]
+    fn insert_before_tail() -> Result<()> {
+        let mut list = LinkedList::new();
+        // Insert tail element first
+        list.push_back(1, "tail1");
+        // Insert before it
+        assert!(list.insert_before(&1, 0, "head0"));
+        // Verify order
+        let values: Vec<&str> = list.to_vec().iter().map(|s| *s).collect();
+        assert_eq!(values, vec!["head0", "tail1"]);
+        Ok(())
+    }
+
+    #[test]
+    fn insert_before_middle() -> Result<()> {
+        let mut list = LinkedList::new();
+        // Insert sequence: 1, 2, 3
+        list.push_back(1, "first");
+        list.push_back(2, "second");
+        list.push_back(3, "third");
+        // Insert 1.5 before 2
+        assert!(list.insert_before(&2, 99, "middle"));
+        // Verify order
+        let values: Vec<&str> = list.to_vec().iter().map(|s| *s).collect();
+        assert_eq!(values, vec!["first", "middle", "second", "third"]);
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_key_insertion() {
+        let mut list = LinkedList::new();
+        // Insert key 1
+        assert!(list.push_back(1, "value1"));
+        // Try to insert same key again - should fail
+        assert!(!list.push_back(1, "value2"));
+        // Original should remain
+        let values: Vec<&str> = list.to_vec().iter().map(|s| *s).collect();
+        assert_eq!(values, vec!["value1"]);
+    }
+
+    #[test]
+    fn insert_before_after_removals() -> Result<()> {
+        let mut list = LinkedList::new();
+        list.push_back(1, "first");
+        list.push_back(2, "second");
+        list.push_back(3, "third");
+        // Remove middle element
+        assert!(list.remove_node(2));
+        // Insert before what was position 3 (now position 2)
+        assert!(list.insert_before(&3, 99, "new_middle"));
+        // Verify order: first, new_middle, third
+        let values: Vec<&str> = list.to_vec().iter().map(|s| *s).collect();
+        assert_eq!(values, vec!["first", "new_middle", "third"]);
         Ok(())
     }
 

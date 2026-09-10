@@ -78,7 +78,7 @@ impl InnerOrder for InnerL4Order {
 }
 
 impl TryFrom<(Address, L4Order)> for InnerL4Order {
-    type Error = Error;
+    type Error = OrderBookError;
 
     fn try_from(value: (Address, L4Order)) -> Result<Self> {
         let L4Order {
@@ -163,7 +163,7 @@ impl From<InnerL4Order> for L4Order {
 }
 
 impl TryFrom<NodeDataOrderStatus> for InnerL4Order {
-    type Error = Error;
+    type Error = OrderBookError;
 
     fn try_from(value: NodeDataOrderStatus) -> Result<Self> {
         (value.user, value.order).try_into()
@@ -198,7 +198,7 @@ pub(crate) enum InnerOrderDiff {
 }
 
 impl TryFrom<OrderDiff> for InnerOrderDiff {
-    type Error = Error;
+    type Error = OrderBookError;
 
     fn try_from(value: OrderDiff) -> Result<Self> {
         Ok(match value {
