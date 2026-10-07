@@ -1,7 +1,7 @@
 use crate::{
-    listeners::order_book::{L2Snapshots, TimedSnapshots, utils::compute_l2_snapshots},
+    listeners::order_book::{L2Snapshots, utils::compute_l2_snapshots},
     order_book::{
-        Coin, InnerOrder, Oid,
+        Coin, InnerOrder, Oid, Snapshot,
         multi_book::{OrderBooks, Snapshots},
     },
     prelude::*,
@@ -10,7 +10,7 @@ use crate::{
         node_data::{Batch, NodeDataOrderDiff, NodeDataOrderStatus},
     },
 };
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone)]
 pub(super) struct OrderBookState {
@@ -42,9 +42,14 @@ impl OrderBookState {
         self.height
     }
 
-    // forcibly take snapshot - (time, height, snapshot)
-    pub(super) fn compute_snapshot(&self) -> TimedSnapshots {
-        TimedSnapshots { time: self.time, height: self.height, snapshot: self.order_book.to_snapshots_par() }
+    // forcibly take snapshot of every book
+    pub(super) fn compute_snapshot(&self) -> Snapshots<InnerL4Order> {
+        self.order_book.to_snapshots_par()
+    }
+
+    // (time, height, snapshot) of one coin's book
+    pub(super) fn coin_snapshot(&self, coin: &Coin) -> Option<(u64, u64, Snapshot<InnerL4Order>)> {
+        self.order_book.as_ref().get(coin).map(|book| (self.time, self.height, book.to_snapshot()))
     }
 
     // (time, snapshot)
@@ -63,8 +68,8 @@ impl OrderBookState {
 
     pub(super) fn apply_updates(
         &mut self,
-        order_statuses: Batch<NodeDataOrderStatus>,
-        order_diffs: Batch<NodeDataOrderDiff>,
+        order_statuses: &Batch<NodeDataOrderStatus>,
+        order_diffs: &Batch<NodeDataOrderDiff>,
     ) -> Result<()> {
         let height = order_statuses.block_number();
         let time = order_statuses.block_time();
@@ -75,10 +80,9 @@ impl OrderBookState {
             // This is not an error in case we started caching long before a snapshot is fetched
             return Ok(());
         }
-        let mut diffs = order_diffs.events().into_iter().collect::<VecDeque<_>>();
         let mut order_map = order_statuses
-            .events()
-            .into_iter()
+            .events_ref()
+            .iter()
             .filter_map(|order_status| {
                 if order_status.is_inserted_into_book() {
                     Some((Oid::new(order_status.order.oid), order_status))
@@ -87,7 +91,7 @@ impl OrderBookState {
                 }
             })
             .collect::<HashMap<_, _>>();
-        while let Some(diff) = diffs.pop_front() {
+        for diff in order_diffs.events_ref() {
             let oid = diff.oid();
             let coin = diff.coin();
             if coin.is_spot() && self.ignore_spot {
@@ -98,7 +102,7 @@ impl OrderBookState {
                 InnerOrderDiff::New { sz, insert_before } => {
                     if let Some(order) = order_map.remove(&oid) {
                         let time = order.time.and_utc().timestamp_millis();
-                        let mut inner_order: InnerL4Order = order.try_into()?;
+                        let mut inner_order: InnerL4Order = order.clone().try_into()?;
                         inner_order.modify_sz(sz);
                         // must replace time with time of entering book, which is the timestamp of the order status update
                         #[allow(clippy::unwrap_used)]

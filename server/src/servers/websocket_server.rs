@@ -1,13 +1,11 @@
 use crate::{
-    listeners::order_book::{
-        InternalMessage, L2SnapshotParams, L2Snapshots, OrderBookListener, TimedSnapshots, hl_listen,
-    },
+    listeners::order_book::{InternalMessage, L2SnapshotParams, L2Snapshots, OrderBookListener, hl_listen},
     order_book::{Coin, Snapshot},
     prelude::*,
     types::{
         L2Book, L4Book, L4BookUpdates, L4Order, Trade,
         inner::InnerLevel,
-        node_data::{Batch, NodeDataFill, NodeDataOrderDiff, NodeDataOrderStatus},
+        node_data::{Batch, NodeDataFill},
         subscription::{ClientMessage, DEFAULT_LEVELS, ServerResponse, Subscription, SubscriptionManager},
     },
 };
@@ -104,7 +102,7 @@ async fn handle_socket(
     let mut internal_message_rx = internal_message_tx.subscribe();
     let is_ready = listener.lock().await.is_ready();
     let mut manager = SubscriptionManager::default();
-    let mut universe = listener.lock().await.universe().into_iter().map(|c| c.value()).collect();
+    let mut universe = book_universe(&listener, ignore_spot).await;
     if !is_ready {
         let msg = ServerResponse::Error("Order book not ready for streaming (waiting for snapshot)".to_string());
         send_socket_message(&mut socket, msg).await;
@@ -123,15 +121,19 @@ async fn handle_socket(
                                 }
                             },
                             InternalMessage::Fills{ batch } => {
+                                // Grouping clones the whole block's fills; skip it unless this
+                                // connection has a trades subscription.
+                                if !manager.has_trades() {
+                                    continue;
+                                }
                                 let mut trades = coin_to_trades(batch);
                                 for sub in manager.subscriptions() {
                                     send_ws_data_from_trades(&mut socket, sub, &mut trades).await;
                                 }
                             },
-                            InternalMessage::L4BookUpdates{ diff_batch, status_batch } => {
-                                let mut book_updates = coin_to_book_updates(diff_batch, status_batch);
+                            InternalMessage::L4BookUpdates{ by_coin } => {
                                 for sub in manager.subscriptions() {
-                                    send_ws_data_from_book_updates(&mut socket, sub, &mut book_updates).await;
+                                    send_ws_data_from_book_updates(&mut socket, sub, by_coin).await;
                                 }
                             },
                         }
@@ -160,7 +162,7 @@ async fn handle_socket(
                             info!("Client message: {text}");
 
                             if let Ok(value) = serde_json::from_str::<ClientMessage>(text) {
-                                receive_client_message(&mut socket, &mut manager, value, &universe, listener.clone()).await;
+                                receive_client_message(&mut socket, &mut manager, value, &mut universe, listener.clone(), ignore_spot).await;
                             }
                             else {
                                 let msg = ServerResponse::Error(format!("Error parsing JSON into valid websocket request: {text}"));
@@ -186,14 +188,24 @@ async fn receive_client_message(
     socket: &mut WebSocket,
     manager: &mut SubscriptionManager,
     client_message: ClientMessage,
-    universe: &HashSet<String>,
+    universe: &mut HashSet<String>,
     listener: Arc<Mutex<OrderBookListener>>,
+    ignore_spot: bool,
 ) {
     let subscription = match &client_message {
         ClientMessage::Unsubscribe { subscription } | ClientMessage::Subscribe { subscription } => subscription.clone(),
     };
     // this is used for display purposes only, hence unwrap_or_default. It also shouldn't fail
     let sub = serde_json::to_string(&subscription).unwrap_or_default();
+    // Per-block L2 snapshots (which also refresh `universe`) only flow while some connection has an
+    // l2Book subscription, so refresh it here for a coin it does not know yet. Keep the previous
+    // set if the book is not ready (empty universe).
+    if !universe.contains(subscription.coin()) {
+        let fresh = book_universe(&listener, ignore_spot).await;
+        if !fresh.is_empty() {
+            *universe = fresh;
+        }
+    }
     if !subscription.validate(universe) {
         let msg = ServerResponse::Error(format!("Invalid subscription: {sub}"));
         send_socket_message(socket, msg).await;
@@ -241,6 +253,12 @@ async fn send_socket_message(socket: &mut WebSocket, msg: ServerResponse) {
             error!("Server response serialization error: {err}");
         }
     }
+}
+
+// Coins of the current books, as validated against on subscribe (matches new_universe).
+async fn book_universe(listener: &Arc<Mutex<OrderBookListener>>, ignore_spot: bool) -> HashSet<String> {
+    let coins = listener.lock().await.universe();
+    coins.into_iter().filter(|c| !c.is_spot() || !ignore_spot).map(|c| c.value()).collect()
 }
 
 // derive it from l2_snapshots because thats convenient
@@ -298,34 +316,14 @@ fn coin_to_trades(batch: &Batch<NodeDataFill>) -> HashMap<String, Vec<Trade>> {
     trades
 }
 
-fn coin_to_book_updates(
-    diff_batch: &Batch<NodeDataOrderDiff>,
-    status_batch: &Batch<NodeDataOrderStatus>,
-) -> HashMap<String, L4BookUpdates> {
-    let diffs = diff_batch.clone().events();
-    let statuses = status_batch.clone().events();
-    let time = diff_batch.block_time();
-    let height = diff_batch.block_number();
-    let mut updates = HashMap::new();
-    for diff in diffs {
-        let coin = diff.coin().value();
-        updates.entry(coin).or_insert_with(|| L4BookUpdates::new(time, height)).book_diffs.push(diff);
-    }
-    for status in statuses {
-        let coin = status.order.coin.clone();
-        updates.entry(coin).or_insert_with(|| L4BookUpdates::new(time, height)).order_statuses.push(status);
-    }
-    updates
-}
-
 async fn send_ws_data_from_book_updates(
     socket: &mut WebSocket,
     subscription: &Subscription,
-    book_updates: &mut HashMap<String, L4BookUpdates>,
+    book_updates: &HashMap<String, L4BookUpdates>,
 ) {
     if let Subscription::L4Book { coin } = subscription {
-        if let Some(updates) = book_updates.remove(coin) {
-            let msg = ServerResponse::L4Book(L4Book::Updates(updates));
+        if let Some(updates) = book_updates.get(coin) {
+            let msg = ServerResponse::L4Book(L4Book::Updates(updates.clone()));
             send_socket_message(socket, msg).await;
         }
     }
@@ -351,20 +349,15 @@ impl Subscription {
         listener: Arc<Mutex<OrderBookListener>>,
     ) -> Result<Option<ServerResponse>> {
         if let Self::L4Book { coin } = self {
-            let snapshot = listener.lock().await.compute_snapshot();
-            if let Some(TimedSnapshots { time, height, snapshot }) = snapshot {
-                let snapshot =
-                    snapshot.value().into_iter().filter(|(c, _)| *c == Coin::new(coin)).collect::<Vec<_>>().pop();
-                if let Some((coin, snapshot)) = snapshot {
-                    let snapshot =
-                        snapshot.as_ref().clone().map(|orders| orders.into_iter().map(L4Order::from).collect());
-                    return Ok(Some(ServerResponse::L4Book(L4Book::Snapshot {
-                        coin: coin.value(),
-                        time,
-                        height,
-                        levels: snapshot,
-                    })));
-                }
+            let snapshot = listener.lock().await.compute_coin_snapshot(&Coin::new(coin));
+            if let Some((time, height, snapshot)) = snapshot {
+                let snapshot = snapshot.as_ref().clone().map(|orders| orders.into_iter().map(L4Order::from).collect());
+                return Ok(Some(ServerResponse::L4Book(L4Book::Snapshot {
+                    coin: coin.clone(),
+                    time,
+                    height,
+                    levels: snapshot,
+                })));
             }
             return Err("Snapshot Failed".into());
         }

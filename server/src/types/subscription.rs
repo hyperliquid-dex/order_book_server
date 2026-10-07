@@ -1,7 +1,14 @@
 use crate::types::{L2Book, L4Book, Trade};
 use log::info;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::{
+    collections::HashSet,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+
+// Live L2Book subscriptions across all connections. L2 snapshots of every book are only computed
+// while this is non-zero.
+pub(crate) static L2_BOOK_SUBSCRIPTIONS: AtomicUsize = AtomicUsize::new(0);
 
 const MAX_LEVELS: usize = 100;
 pub(crate) const DEFAULT_LEVELS: usize = 20;
@@ -27,6 +34,12 @@ pub(crate) enum Subscription {
 }
 
 impl Subscription {
+    pub(crate) fn coin(&self) -> &str {
+        match self {
+            Self::Trades { coin } | Self::L4Book { coin } | Self::L2Book { coin, .. } => coin,
+        }
+    }
+
     pub(crate) fn validate(&self, universe: &HashSet<String>) -> bool {
         match self {
             Self::Trades { coin } => universe.contains(coin),
@@ -91,11 +104,25 @@ pub(crate) struct SubscriptionManager {
 
 impl SubscriptionManager {
     pub(crate) fn subscribe(&mut self, sub: Subscription) -> bool {
-        self.subscriptions.insert(sub)
+        let is_l2 = matches!(sub, Subscription::L2Book { .. });
+        let added = self.subscriptions.insert(sub);
+        if added && is_l2 {
+            L2_BOOK_SUBSCRIPTIONS.fetch_add(1, Ordering::Relaxed);
+        }
+        added
     }
 
     pub(crate) fn unsubscribe(&mut self, sub: Subscription) -> bool {
-        self.subscriptions.remove(&sub)
+        let is_l2 = matches!(sub, Subscription::L2Book { .. });
+        let removed = self.subscriptions.remove(&sub);
+        if removed && is_l2 {
+            L2_BOOK_SUBSCRIPTIONS.fetch_sub(1, Ordering::Relaxed);
+        }
+        removed
+    }
+
+    pub(crate) fn has_trades(&self) -> bool {
+        self.subscriptions.iter().any(|sub| matches!(sub, Subscription::Trades { .. }))
     }
 
     pub(crate) const fn subscriptions(&self) -> &HashSet<Subscription> {
@@ -103,11 +130,41 @@ impl SubscriptionManager {
     }
 }
 
+impl Drop for SubscriptionManager {
+    fn drop(&mut self) {
+        let n_l2 = self.subscriptions.iter().filter(|sub| matches!(sub, Subscription::L2Book { .. })).count();
+        L2_BOOK_SUBSCRIPTIONS.fetch_sub(n_l2, Ordering::Relaxed);
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crate::types::subscription::Subscription;
 
-    use super::{ClientMessage, ServerResponse};
+    use super::{ClientMessage, L2_BOOK_SUBSCRIPTIONS, ServerResponse, SubscriptionManager};
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn test_l2_book_subscription_count() {
+        let l2 = |coin: &str| Subscription::L2Book {
+            coin: coin.to_string(),
+            n_sig_figs: None,
+            n_levels: None,
+            mantissa: None,
+        };
+        let before = L2_BOOK_SUBSCRIPTIONS.load(Ordering::Relaxed);
+        let mut manager = SubscriptionManager::default();
+        assert!(manager.subscribe(l2("BTC")));
+        assert!(!manager.subscribe(l2("BTC")));
+        assert!(manager.subscribe(l2("ETH")));
+        assert!(manager.subscribe(Subscription::L4Book { coin: "BTC".to_string() }));
+        assert_eq!(L2_BOOK_SUBSCRIPTIONS.load(Ordering::Relaxed), before + 2);
+        assert!(manager.unsubscribe(l2("BTC")));
+        assert!(!manager.unsubscribe(l2("BTC")));
+        assert_eq!(L2_BOOK_SUBSCRIPTIONS.load(Ordering::Relaxed), before + 1);
+        drop(manager);
+        assert_eq!(L2_BOOK_SUBSCRIPTIONS.load(Ordering::Relaxed), before);
+    }
 
     #[test]
     fn test_message_deserialization_subscription_response() {

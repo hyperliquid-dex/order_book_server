@@ -7,9 +7,10 @@ use crate::{
     },
     prelude::*,
     types::{
-        L4Order,
+        L4BookUpdates, L4Order,
         inner::{InnerL4Order, InnerLevel},
         node_data::{Batch, EventSource, NodeDataFill, NodeDataOrderDiff, NodeDataOrderStatus},
+        subscription::L2_BOOK_SUBSCRIPTIONS,
     },
 };
 use alloy::primitives::Address;
@@ -21,7 +22,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     io::{Read, Seek, SeekFrom},
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, atomic::Ordering as AtomicOrdering},
     time::Duration,
 };
 use tokio::{
@@ -161,7 +162,7 @@ fn fetch_snapshot(
                         if let Some(mut state) = state {
                             while state.height() < height {
                                 if let Some((order_statuses, order_diffs)) = cache.pop_front() {
-                                    state.apply_updates(order_statuses, order_diffs)?;
+                                    state.apply_updates(&order_statuses, &order_diffs)?;
                                 } else {
                                     return Err::<(), Error>("Not enough cached updates".into());
                                 }
@@ -169,7 +170,7 @@ fn fetch_snapshot(
                             if state.height() > height {
                                 return Err("Fetched snapshot lagging stored state".into());
                             }
-                            let stored_snapshot = state.compute_snapshot().snapshot;
+                            let stored_snapshot = state.compute_snapshot();
                             info!("Validating snapshot");
                             validate_snapshot_consistency(&stored_snapshot, expected_snapshot, ignore_spot)
                         } else {
@@ -282,20 +283,18 @@ impl OrderBookListener {
             if let Some((order_statuses, order_diffs)) = self.pop_cache() {
                 self.order_book_state
                     .as_mut()
-                    .map(|book| book.apply_updates(order_statuses.clone(), order_diffs.clone()))
+                    .map(|book| book.apply_updates(&order_statuses, &order_diffs))
                     .transpose()?;
                 if let Some(cache) = &mut self.fetched_snapshot_cache {
                     cache.push_back((order_statuses.clone(), order_diffs.clone()));
                 }
                 if let Some(tx) = &self.internal_message_tx {
-                    let tx = tx.clone();
-                    tokio::spawn(async move {
-                        let updates = Arc::new(InternalMessage::L4BookUpdates {
-                            diff_batch: order_diffs,
-                            status_batch: order_statuses,
-                        });
-                        let _unused = tx.send(updates);
-                    });
+                    // Grouped by coin once for all connections. Sent inline so blocks reach clients
+                    // in order.
+                    if tx.receiver_count() > 0 {
+                        let by_coin = group_book_updates(order_diffs, order_statuses);
+                        let _unused = tx.send(Arc::new(InternalMessage::L4BookUpdates { by_coin }));
+                    }
                 }
             }
         }
@@ -316,7 +315,7 @@ impl OrderBookListener {
         let mut new_order_book = OrderBookState::from_snapshot(snapshot, height, 0, true, self.ignore_spot);
         let mut retry = false;
         while let Some((order_statuses, order_diffs)) = self.pop_cache() {
-            if new_order_book.apply_updates(order_statuses, order_diffs).is_err() {
+            if new_order_book.apply_updates(&order_statuses, &order_diffs).is_err() {
                 info!(
                     "Failed to apply updates to this book (likely missing older updates). Waiting for next snapshot."
                 );
@@ -330,9 +329,9 @@ impl OrderBookListener {
         }
     }
 
-    // forcibly grab current snapshot
-    pub(crate) fn compute_snapshot(&mut self) -> Option<TimedSnapshots> {
-        self.order_book_state.as_mut().map(|o| o.compute_snapshot())
+    // Snapshot of one coin's book as (time, height, snapshot).
+    pub(crate) fn compute_coin_snapshot(&self, coin: &Coin) -> Option<(u64, u64, Snapshot<InnerL4Order>)> {
+        self.order_book_state.as_ref().and_then(|o| o.coin_snapshot(coin))
     }
 
     // prevent snapshotting mutiple times at the same height
@@ -435,7 +434,8 @@ impl DirectoryListener for OrderBookListener {
                 return Err(err);
             }
         }
-        let snapshot = self.l2_snapshots(true);
+        let snapshot =
+            if L2_BOOK_SUBSCRIPTIONS.load(AtomicOrdering::Relaxed) > 0 { self.l2_snapshots(true) } else { None };
         if let Some(snapshot) = snapshot {
             if let Some(tx) = &self.internal_message_tx {
                 let tx = tx.clone();
@@ -457,17 +457,44 @@ impl L2Snapshots {
     }
 }
 
-pub(crate) struct TimedSnapshots {
-    pub(crate) time: u64,
-    pub(crate) height: u64,
-    pub(crate) snapshot: Snapshots<InnerL4Order>,
+// One block's diffs and statuses split per coin. get_mut before insert avoids allocating a key
+// String for every event.
+fn group_book_updates(
+    diff_batch: Batch<NodeDataOrderDiff>,
+    status_batch: Batch<NodeDataOrderStatus>,
+) -> HashMap<String, L4BookUpdates> {
+    let time = diff_batch.block_time();
+    let height = diff_batch.block_number();
+    let mut updates: HashMap<String, L4BookUpdates> = HashMap::new();
+    for diff in diff_batch.events() {
+        if let Some(u) = updates.get_mut(diff.coin_str()) {
+            u.book_diffs.push(diff);
+        } else {
+            let mut u = L4BookUpdates::new(time, height);
+            let coin = diff.coin_str().to_string();
+            u.book_diffs.push(diff);
+            updates.insert(coin, u);
+        }
+    }
+    for status in status_batch.events() {
+        if let Some(u) = updates.get_mut(status.order.coin.as_str()) {
+            u.order_statuses.push(status);
+        } else {
+            let mut u = L4BookUpdates::new(time, height);
+            let coin = status.order.coin.clone();
+            u.order_statuses.push(status);
+            updates.insert(coin, u);
+        }
+    }
+    updates
 }
 
 // Messages sent from node data listener to websocket dispatch to support streaming
 pub(crate) enum InternalMessage {
     Snapshot { l2_snapshots: L2Snapshots, time: u64 },
     Fills { batch: Batch<NodeDataFill> },
-    L4BookUpdates { diff_batch: Batch<NodeDataOrderDiff>, status_batch: Batch<NodeDataOrderStatus> },
+    // One block's book diffs and order statuses, grouped by coin.
+    L4BookUpdates { by_coin: HashMap<String, L4BookUpdates> },
 }
 
 #[derive(Eq, PartialEq, Hash)]
