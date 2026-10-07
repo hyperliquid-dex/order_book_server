@@ -76,7 +76,7 @@ impl Trade {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct L4BookUpdates {
     pub time: u64,
     pub height: u64,
